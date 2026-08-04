@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 const origen = ref('Madrid')
 const destino = ref('Barcelona')
@@ -20,6 +20,12 @@ const API_URL = import.meta.env.VITE_API_URL || 'https://busroad-api.kavanasyste
 // URLs para abrir la ruta en apps de navegación (se actualizan tras calcular)
 const mapsUrl = ref('')
 const wazeUrl = ref('')
+
+// Diferencia en km entre la ruta segura y la convencional (si existe)
+const diferenciaKm = computed(() => {
+  if (!result.value || !result.value.convencional) return 0
+  return Math.round((result.value.convencional.distancia_km - result.value.distancia_km) * 10) / 10
+})
 
 const abrirEnMapas = (origen: string, destino: string) => {
   mapsUrl.value = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origen)}&destination=${encodeURIComponent(destino)}&travelmode=driving`
@@ -103,18 +109,36 @@ const calcularRuta = async () => {
       <h2>Resultado de la ruta</h2>
       <p><strong>Origen:</strong> {{ result.origen }}</p>
       <p><strong>Destino:</strong> {{ result.destino }}</p>
-      <p><strong>Distancia:</strong> {{ result.distancia_km }} km</p>
-      <p><strong>Duración:</strong> {{ result.duracion_min }} min</p>
-      <p><strong>Motor:</strong> {{ result.motor }}</p>
+
+      <div class="ruta-segura">
+        <h3>🚌 Ruta para tu vehículo</h3>
+        <p><strong>Distancia:</strong> {{ result.distancia_km }} km</p>
+        <p><strong>Duración:</strong> {{ result.duracion_min }} min</p>
+        <p class="motor-note">Calculada con las restricciones de tu vehículo ({{ result.motor }})</p>
+      </div>
+
+      <div v-if="result.convencional" class="ruta-convencional">
+        <h3>🚗 Ruta convencional (coche)</h3>
+        <p><strong>Distancia:</strong> {{ result.convencional.distancia_km }} km</p>
+        <p><strong>Duración:</strong> {{ result.convencional.duracion_min }} min</p>
+        <p class="motor-note">Sin restricciones, la ruta que seguiría un coche normal</p>
+        <p v-if="diferenciaKm > 0" class="diff-note">
+          ⚠️ Tu ruta es {{ diferenciaKm }} km más larga pero evita vías no aptas para tu vehículo
+        </p>
+        <p v-else-if="diferenciaKm < 0" class="diff-note">
+          ✅ Tu ruta es incluso {{ Math.abs(diferenciaKm) }} km más corta
+        </p>
+      </div>
 
       <div class="maps-actions">
-        <a class="maps-btn" :href="mapsUrl" target="_blank" rel="noopener">
-          📍 Abrir en Google Maps
+        <a class="maps-btn alt" :href="mapsUrl" target="_blank" rel="noopener">
+          🚗 Ver ruta convencional en Google Maps
         </a>
-        <a class="maps-btn alt" :href="wazeUrl" target="_blank" rel="noopener">
-          🚗 Abrir en Waze
+        <a class="maps-btn" :href="wazeUrl" target="_blank" rel="noopener">
+          📍 Navegar a destino (Waze)
         </a>
       </div>
+      <p class="maps-note">Google Maps no conoce las restricciones de tu vehículo, por eso mostramos la ruta convencional aparte. Para navegar con la ruta segura, usa las instrucciones de arriba.</p>
 
       <h3>Pasos:</h3>
       <ol>
@@ -216,6 +240,45 @@ button:disabled {
 }
 .maps-btn.alt:hover {
   background-color: #388e3c;
+}
+.maps-note {
+  font-size: 13px;
+  color: #666;
+  margin-top: 8px;
+  font-style: italic;
+}
+.ruta-segura {
+  margin-top: 12px;
+  padding: 10px;
+  background-color: #e8f5e9;
+  border-radius: 4px;
+  border-left: 4px solid #4caf50;
+}
+.ruta-convencional {
+  margin-top: 12px;
+  padding: 10px;
+  background-color: #e3f2fd;
+  border-radius: 4px;
+  border-left: 4px solid #1976d2;
+}
+.ruta-segura h3, .ruta-convencional h3 {
+  margin: 0 0 6px 0;
+  font-size: 16px;
+  color: #333;
+}
+.ruta-segura p, .ruta-convencional p {
+  margin: 3px 0;
+}
+.motor-note {
+  font-size: 12px;
+  color: #777;
+  font-style: italic;
+}
+.diff-note {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 6px !important;
+  color: #333;
 }
 .no-riesgos {
   color: #28a745;

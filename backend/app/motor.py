@@ -43,6 +43,13 @@ class PuntoRiesgo(BaseModel):
     descripcion: str
 
 
+class RutaConvencional(BaseModel):
+    distancia_km: float
+    duracion_min: float
+    polyline: str
+    pasos: list[str]
+
+
 class RutaResponse(BaseModel):
     origen: str
     destino: str
@@ -52,6 +59,7 @@ class RutaResponse(BaseModel):
     pasos: list[str]
     riesgos: list[PuntoRiesgo] = []
     motor: str  # "openrouteservice" | "google-routes" | "mock"
+    convencional: RutaConvencional | None = None  # ruta de coche sin restricciones
 
 
 # ------------------------------------------------------------------ helpers
@@ -77,11 +85,46 @@ async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
     ]
 
 
+async def _pedir_ruta_ors(
+    api_key: str, o: list, d: list, perfil: str, restricciones: dict | None
+) -> dict:
+    """Pide una ruta a ORS y devuelve {distancia_km, duracion_min, polyline, pasos}."""
+    payload = {
+        "coordinates": [o, d],
+        "radiuses": [1500, 1500],
+        "language": "es",
+    }
+    if restricciones:
+        payload["options"] = {"profile_params": {"restrictions": restricciones}}
+    async with httpx.AsyncClient(timeout=40) as client:
+        r = await client.post(
+            f"https://api.openrouteservice.org/v2/directions/{perfil}",
+            json=payload,
+            headers={"Authorization": api_key, "Content-Type": "application/json"},
+        )
+    if r.status_code != 200:
+        raise ValueError(f"OpenRouteService ({perfil}) respondió {r.status_code}: {r.text[:120]}")
+    route = r.json().get("routes", [{}])[0]
+    summary = route.get("summary", {})
+    pasos = []
+    for seg in route.get("segments", []):
+        for step in seg.get("steps", []):
+            txt = step.get("instruction") or step.get("name") or ""
+            if txt:
+                pasos.append(txt)
+    return {
+        "distancia_km": round(summary.get("distance", 0) / 1000, 1),
+        "duracion_min": round(summary.get("duration", 0) / 60, 1),
+        "polyline": route.get("geometry", ""),
+        "pasos": pasos[:15],
+    }
+
+
 async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     """Ruta con restricciones reales de dimensiones (perfil driving-hgv).
 
-    Prueba combinaciones de candidatos origen/destino hasta encontrar una
-    ruta enrutable (el primer candidato puede caer en una zona sin vías).
+    También calcula la ruta convencional (driving-car, sin restricciones)
+    con las mismas coordenadas, para que el usuario compare la diferencia.
     """
     origenes = await _geocodificar_ors(api_key, req.origen)
     destinos = await _geocodificar_ors(api_key, req.destino)
@@ -98,37 +141,35 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     ultimo_error = "Sin ruta enrutable entre origen y destino."
     for o in origenes[:2]:
         for d in destinos[:2]:
-            payload = {
-                "coordinates": [o, d],
-                "radiuses": [1500, 1500],
-                "language": "es",
-                "options": {"profile_params": {"restrictions": restricciones}},
-            }
-            async with httpx.AsyncClient(timeout=40) as client:
-                r = await client.post(
-                    ORS_DIRECTIONS_URL,
-                    json=payload,
-                    headers={"Authorization": api_key, "Content-Type": "application/json"},
-                )
-            if r.status_code == 200:
-                route = r.json().get("routes", [{}])[0]
-                summary = route.get("summary", {})
-                pasos = []
-                for seg in route.get("segments", []):
-                    for step in seg.get("steps", []):
-                        txt = step.get("instruction") or step.get("name") or ""
-                        if txt:
-                            pasos.append(txt)
-                return RutaResponse(
-                    origen=req.origen,
-                    destino=req.destino,
-                    distancia_km=round(summary.get("distance", 0) / 1000, 1),
-                    duracion_min=round(summary.get("duration", 0) / 60, 1),
-                    polyline=route.get("geometry", ""),
-                    pasos=pasos[:15],
-                    motor="openrouteservice",
-                )
-            ultimo_error = f"OpenRouteService respondió {r.status_code}: {r.text[:120]}"
+            try:
+                segura = await _pedir_ruta_ors(api_key, o, d, "driving-hgv", restricciones)
+            except ValueError as e:
+                ultimo_error = str(e)
+                continue
+            # Ruta convencional (coche) con las mismas coordenadas
+            try:
+                convencional = await _pedir_ruta_ors(api_key, o, d, "driving-car", None)
+            except ValueError:
+                convencional = None
+            return RutaResponse(
+                origen=req.origen,
+                destino=req.destino,
+                distancia_km=segura["distancia_km"],
+                duracion_min=segura["duracion_min"],
+                polyline=segura["polyline"],
+                pasos=segura["pasos"],
+                motor="openrouteservice",
+                convencional=(
+                    RutaConvencional(
+                        distancia_km=convencional["distancia_km"],
+                        duracion_min=convencional["duracion_min"],
+                        polyline=convencional["polyline"],
+                        pasos=convencional["pasos"],
+                    )
+                    if convencional
+                    else None
+                ),
+            )
     raise ValueError(ultimo_error)
 
 

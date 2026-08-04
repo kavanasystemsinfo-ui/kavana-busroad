@@ -20,6 +20,8 @@ const API_URL = import.meta.env.VITE_API_URL || 'https://busroad-api.kavanasyste
 // URLs para abrir la ruta en apps de navegación (se actualizan tras calcular)
 const mapsUrl = ref('')
 const wazeUrl = ref('')
+const mapsSeguraUrl = ref('')
+const wazeSeguraUrl = ref('')
 
 // Diferencia en km entre la ruta segura y la convencional (si existe)
 const diferenciaKm = computed(() => {
@@ -27,9 +29,58 @@ const diferenciaKm = computed(() => {
   return Math.round((result.value.convencional.distancia_km - result.value.distancia_km) * 10) / 10
 })
 
-const abrirEnMapas = (origen: string, destino: string) => {
-  mapsUrl.value = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origen)}&destination=${encodeURIComponent(destino)}&travelmode=driving`
-  wazeUrl.value = `https://www.waze.com/ul?q=${encodeURIComponent(destino)}&navigate=yes`
+// Decodifica un polyline encoded (formato Google/ORS) a coordenadas [lat, lng]
+const decodePolyline = (encoded: string): [number, number][] => {
+  const points: [number, number][] = []
+  let index = 0, lat = 0, lng = 0
+  while (index < encoded.length) {
+    let b: number, shift = 0, result = 0
+    do {
+      b = encoded.charCodeAt(index++) - 63
+      result |= (b & 0x1f) << shift
+      shift += 5
+    } while (b >= 0x20)
+    const dlat = result & 1 ? ~(result >> 1) : result >> 1
+    lat += dlat
+    shift = 0; result = 0
+    do {
+      b = encoded.charCodeAt(index++) - 63
+      result |= (b & 0x1f) << shift
+      shift += 5
+    } while (b >= 0x20)
+    const dlng = result & 1 ? ~(result >> 1) : result >> 1
+    lng += dlng
+    points.push([lat / 1e5, lng / 1e5])
+  }
+  return points
+}
+
+// Toma hasta N puntos repartidos a lo largo de la ruta (para waypoints)
+const sampleWaypoints = (points: [number, number][], n: number): [number, number][] => {
+  if (points.length <= n) return points.slice(1, -1)
+  const step = (points.length - 1) / (n - 1)
+  const out: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    out.push(points[Math.round(i * step)])
+  }
+  return out.slice(1, -1) // sin origen ni destino (van como params)
+}
+
+const abrirEnMapas = (origen: string, destino: string, polyline?: string) => {
+  const o = encodeURIComponent(origen)
+  const d = encodeURIComponent(destino)
+  // Ruta convencional: Google Maps decide (coche)
+  mapsUrl.value = `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}&travelmode=driving`
+  wazeUrl.value = `https://www.waze.com/ul?q=${d}&navigate=yes`
+  // Ruta segura: forzamos los puntos de nuestra ruta como waypoints
+  if (polyline) {
+    const pts = sampleWaypoints(decodePolyline(polyline), 8)
+    if (pts.length > 0) {
+      const wps = pts.map(p => `${p[0]},${p[1]}`).join('|')
+      mapsSeguraUrl.value = `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}&waypoints=${wps}&travelmode=driving`
+      wazeSeguraUrl.value = `https://www.waze.com/ul?q=${d}&navigate=yes`
+    }
+  }
 }
 
 const calcularRuta = async () => {
@@ -53,7 +104,7 @@ const calcularRuta = async () => {
     }
     const data = await response.json()
     result.value = data
-    abrirEnMapas(origen.value, destino.value)
+    abrirEnMapas(origen.value, destino.value, data.polyline)
   } catch (e: any) {
     error.value = e.message || 'Error desconocido'
     console.error(e)
@@ -131,14 +182,24 @@ const calcularRuta = async () => {
       </div>
 
       <div class="maps-actions">
+        <a v-if="mapsSeguraUrl" class="maps-btn" :href="mapsSeguraUrl" target="_blank" rel="noopener">
+          🚌 Navegar por TU ruta (Google Maps)
+        </a>
+        <a v-if="wazeSeguraUrl" class="maps-btn" :href="wazeSeguraUrl" target="_blank" rel="noopener">
+          🚌 Navegar por TU ruta (Waze)
+        </a>
+      </div>
+      <p class="maps-note">Estos botones fuerzan tu ruta segura con puntos de paso, para que el navegador no te desvíe por la ruta de coche.</p>
+
+      <div class="maps-actions">
         <a class="maps-btn alt" :href="mapsUrl" target="_blank" rel="noopener">
           🚗 Ver ruta convencional en Google Maps
         </a>
-        <a class="maps-btn" :href="wazeUrl" target="_blank" rel="noopener">
-          📍 Navegar a destino (Waze)
+        <a class="maps-btn alt" :href="wazeUrl" target="_blank" rel="noopener">
+          🚗 Ruta convencional (Waze)
         </a>
       </div>
-      <p class="maps-note">Google Maps no conoce las restricciones de tu vehículo, por eso mostramos la ruta convencional aparte. Para navegar con la ruta segura, usa las instrucciones de arriba.</p>
+      <p class="maps-note">Ruta convencional = la que haría un coche normal, para comparar. Google Maps no conoce las restricciones de tu vehículo.</p>
 
       <h3>Pasos:</h3>
       <ol>

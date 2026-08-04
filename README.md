@@ -1,48 +1,45 @@
 # Kavana BusRoad
 
-Aplicación PWA para cálculo de rutas de vehículos grandes (autobuses, camiones, grúas, etc.) con restricciones de dimensión y paso bajo puentes/túneles. 
+Aplicación PWA para cálculo de rutas de vehículos grandes (autobuses, camiones, grúas) con restricciones de dimensión: altura, anchura, largo y peso. Evita puentes bajos, túneles con límite y calles estrechas usando datos reales de OpenStreetMap.
 
 ## 📋 Descripción
 
-Kavana BusRoad ayuda a transportistas y conductores de vehículos de gran tamaño a planificar rutas evitando obstáculos según las dimensiones del vehículo, ancho, peso y altura libre. 
+Kavana BusRoad ayuda a transportistas y conductores de vehículos de gran tamaño a planificar rutas seguras según las dimensiones reales de su vehículo. A diferencia de Google Maps (que calcula rutas de coche), BusRoad aplica las restricciones del vehículo en cada tramo y muestra la comparación con la ruta convencional.
 
-- **Frontend**: Vue 3 + Vite (PWA, desplegado en Vercel)
-- **Backend**: FastAPI (Python) que usa la [Google Routes API](https://developers.google.com/maps/documentation/routes) para calcular rutas con restricciones de vehículos.
-- **Motor de rutas**: Cuando la `GOOGLE_API_KEY` de API_KEY` está configurada, consulta Google Routes; si no, devuelve una ruta de ejemplo (mock) para permitir desarrollo sin costo.
-- **Despliegue**: Backend listo para desplegar en cualquier proveedor que soporte contenedores (Render, Fly.io, etc.) o VMs. Frontend desplegado en Vercel.
+- **Frontend**: Vue 3 + Vite (PWA) desplegado en Vercel
+- **Backend**: FastAPI (Python) desplegado en Kubernetes (k3s) en el VPS
+- **Motor de rutas**: [OpenRouteService](https://openrouteservice.org/) con perfil `driving-hgv` (vehículos pesados): aplica restricciones reales de altura, anchura, largo y peso en Europa usando datos de OpenStreetMap. Google Routes queda como respaldo de ruta estándar (NO aplica dimensiones fuera de EE.UU.).
+- **Navegación**: los botones de Google Maps/Waze usan waypoints extraídos del polyline de la ruta segura, forzando al navegador a seguir el itinerario calculado.
 
 ## 🛠️ Stack Tecnológico
 
 | Área | Tecnologías |
 |------|-------------|
-| Frontend | Vue 3, Vite, TypeScript, Pinia, TailwindCSS, Workbox (PWA) |
-| Backend | FastAPI, Uvicorn, Pydantic, python-dotenv |
-| Infra | Docker (opcional), GitHub Actions (CI) |
-| Despliegue | Vercel (frontend), cualquier host para backend |
-| API externa | Google Routes API, Geocoding API |
-| Testing | pytest (backend), Vitest/Jest (frontend opcional) |
+| Frontend | Vue 3, Vite, TypeScript |
+| Backend | FastAPI, Uvicorn, Pydantic, httpx |
+| Infra | Docker, Kubernetes (k3s), nginx, Let's Encrypt |
+| Despliegue | Vercel (frontend), k3s VPS + nginx (backend) |
+| API externa | OpenRouteService (`driving-hgv`, geocoding) · Google Routes (fallback) |
+| DNS | Namecheap (subdominio `busroad-api.kavanasystems.com`) |
 
 ## 📁 Estructura del proyecto
 
 ```
 kavana-busroad/
-├── backend/          # Código fuente del API (FastAPI)
+├── backend/            # API FastAPI
 │   ├── app/
-│   │   ├── main.py           # Entrypoint de la API
-│   │   ├── motor/            # Lógica de cálculo de rutas (llama a Google Routes o mock)
-│   │   └── ...
-│   ├── .env.example          # Variables de entorno de ejemplo
-│   ├── requirements.txt      # Dependencias Python
-│   └── ... 
-├── frontend/           # Código fuente de la PWA (Vue 3 + Vite)
-│   ├── src/
-│   │   ├── components/
-│   │   ├── views/
-│   │   ├── router/
-│   │   └── store/
-│   ├── index.html
-│   ├── vite.config.ts
+│   │   ├── main.py     # Entrypoint + health check
+│   │   └── motor.py    # Motores de rutas (ORS → Google → mock)
+│   ├── Dockerfile      # Imagen python:3.12-slim
+│   ├── .env.example
+│   └── requirements.txt
+├── frontend/           # PWA Vue 3 + Vite
+│   ├── src/App.vue     # Formulario + comparativa de rutas + botones de navegación
+│   ├── .env.example    # VITE_API_URL
 │   └── package.json
+├── k8s/
+│   ├── backend.yaml    # Deployment + Service NodePort :30080
+│   └── README.md       # Arquitectura de despliegue k3s
 ├── .gitignore
 └── README.md
 ```
@@ -51,134 +48,160 @@ kavana-busroad/
 
 ### Variables de entorno (backend)
 
-Copia `.env.example` a `.env` y completa los valores:
+Copia `backend/.env.example` a `backend/.env` y completa:
 
 ```dotenv
-# Clave de Google Cloud con las siguientes APIs activadas:
-# - Routes API
-# - Geocoding API
-GOOGLE_API_KEY=tu_clave_aqui
+# MOTOR PRINCIPAL: OpenRouteService (restricciones de dimensiones reales en Europa)
+# Clave gratuita: https://openrouteservice.org/dev-portal/ (2.000 rutas/día)
+ORS_API_KEY=tu_clave_ors
 
-# Puerto donde escuchará el servidor (default: 8000)
+# MOTOR DE RESPALDO: Google Routes (ruta estándar, sin dimensiones fuera de EE.UU.)
+# Opcional. Si no está, el motor principal es ORS; si tampoco hay ORS, devuelve mock.
+GOOGLE_API_KEY=tu_clave_google
+
+# Puerto (default: 8000)
 PORT=8000
 ```
 
-> **Nota**: Si `GOOGLE_API_KEY` no está definida, el endpoint de ruta devolverá una respuesta mock para permitir desarrollo y pruebas sin costo.
+> **Nota**: El orden de motores es `ORS → Google → mock`. Solo si no hay ninguna clave configurada se devuelve una ruta de ejemplo (mock) para desarrollo sin costo.
 
-### Dependencias
+### Variables de entorno (frontend)
 
-#### Backend
-```bash
-cd backend
-# Se recomienda usar un entorno virtual
-python -m venv .venv
-source .venv/bin/activate   # Linux/macOS
-# .venv\Scripts\activate    # Windows
-pip install -r requirements.txt
-```
+Copia `frontend/.env.example` a `frontend/.env`:
 
-#### Frontend
-```bash
-cd frontend
-npm install   # o yarn / pnpm
+```dotenv
+# URL del backend en producción
+VITE_API_URL=https://busroad-api.kavanasystems.com
+# Para desarrollo local: VITE_API_URL=http://localhost:8000
 ```
 
 ## ▶️ Ejecutar en desarrollo
 
 ### Backend
+
 ```bash
 cd backend
-# Asegúrate de tener .env con GOOGLE_API_KEY (o deja vacío para mock)
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-La API quedará disponible en `http://localhost: mock)
-uvicorn app.main:app --reload
-```
-El servidor se ejecutará en `http://localhost:8000`.
+
+La API queda en `http://localhost:8000` (Swagger en `/docs`).
 
 ### Frontend
+
 ```bash
 cd frontend
-npm run dev   # o: vite
+npm install
+npm run dev
 ```
-La aplicación PWA se servirá en `http://localhost:5173` (puede variar según Vite).  
-El frontend está configurado para llamar a la API en `http://localhost:8000` (ver `src/services/api.ts` o similar).
 
-## 🐳 Docker (opcional)
+La PWA se sirve en `http://localhost:5173`.
 
-Si prefieres correr el backend en un contenedor:
+## 🐳 Docker
 
 ```bash
-# Desde la raíz del proyecto
-docker build -t kavana-busroad-backend -f backend/Dockerfile .
-docker run -p 8000:8000 --env-file backend/.env kavana-busroad-backend
+cd backend
+docker build -t kavana-busroad-backend:0.1.0 .
+docker run -p 8000:8000 --env-file .env kavana-busroad-backend
 ```
 
-*(Actualmente no hay un `Dockerfile` en el repositorio; puedes crear uno basado en la imagen oficial de python:3.12-slim.)*
+## ☸️ Despliegue en Kubernetes (k3s)
+
+El backend corre en un clúster k3s en el VPS. Documentación completa en `k8s/README.md`.
+
+Resumen:
+
+```bash
+# 1. Construir imagen y cargarla en k3s (sin registro externo)
+docker build -t kavana-busroad-backend:0.1.0 backend/
+docker save kavana-busroad-backend:0.1.0 | k3s ctr images import -
+
+# 2. Secret con las claves de API
+kubectl create secret generic busroad-secrets \
+  --from-literal=ors_api_key=TU_CLAVE_ORS \
+  --from-literal=google_api_key=TU_CLAVE_GOOGLE
+
+# 3. Deployment + Service (NodePort 30080)
+kubectl apply -f k8s/backend.yaml
+
+# 4. nginx del VPS proxea busroad-api.kavanasystems.com → 127.0.0.1:30080
+#    con certificado Let's Encrypt (renovación automática vía certbot.timer)
+```
+
+> **Pitfall conocido**: el LoadBalancer de Traefik (viene con k3s) captura los puertos 80/443 del host con reglas nftables antes que nginx. Si el tráfico no llega a nginx, convertir el Service de Traefik a ClusterIP (ver `k8s/README.md`).
 
 ## 🧪 Health Check
 
-Una vez el backend está corriendo, verifica su estado:
-
 ```bash
-curl http://localhost:8000/api/v1/health
+curl https://busroad-api.kavanasystems.com/api/v1/health
 ```
 
 Respuesta esperada:
+
 ```json
 {
   "status": "ok",
-  "motor": "google-routes"   // o "mock" si no hay GOOGLE_API_KEY
+  "motor": "openrouteservice"   // o "google-routes" / "mock"
 }
 ```
 
 ## 📖 Documentación de la API
 
-Cuando el backend está en ejecución, la documentación interactiva Swagger UI está disponible en:
+Swagger UI en `http://localhost:8000/docs` (o `https://busroad-api.kavanasystems.com/docs`).
 
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+Endpoints principales:
 
-Los endpoints principales son:
-- `GET /api/v1/health` – Estado del servicio.
-- `POST /api/v1/route` – Calcula una ruta dada una origen, destino y dimensiones del vehículo. (Ver esquema en Swagger para el payload exacto.)
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/api/v1/health` | Estado y motor activo |
+| POST | `/api/v1/ruta` | Calcula ruta segura + convencional dado origen, destino y dimensiones del vehículo |
 
-## 🚀 Despliegue
+Payload de ejemplo:
 
-### Frontend (Vercel)
-1. Fork/repositorio en tu cuenta de GitHub.
+```json
+{
+  "origen": "Estació del Nord, Valencia",
+  "destino": "C. de Ing. Tamarit, 9, 46170 Villar del Arzobispo, Valencia",
+  "vehiculo": { "alto_m": 3.5, "ancho_m": 2.5, "largo_m": 12.0, "peso_kg": 12000 }
+}
+```
+
+Respuesta: distancia, duración, polyline, pasos en español, y la ruta convencional (coche) para comparar.
+
+## 🚀 Despliegue del frontend (Vercel)
+
+1. Repositorio en GitHub (kavanasystemsinfo-ui/kavana-busroad).
 2. En Vercel, importa el proyecto y apunta al directorio `frontend/`.
-3. Configura las variables de entorno (si el frontend necesita alguna, por ahora ninguna).
-4. Vercel detectará automáticamente que es un proyecto Vite y lo desplegará.
+3. Variable de entorno: `VITE_API_URL=https://busroad-api.kavanasystems.com`.
+4. Vercel detecta Vite y despliega automáticamente.
 
-### Backend (ejemplo con Render)
-1. Crea un nuevo **Web Service** en Render.
-2. Conecta tu repositorio y establece el **Build Command**: `pip install -r requirements.txt`
-3. **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. En la sección de **Environment**, agrega:
-   - `GOOGLE_API_KEY` (valor secreto)
-   - `PORT` (Render lo provee automáticamente, pero puedes dejarlo vacío para que use el del .env)
-5. Despliega.
+## 🧭 Cómo navegar con la ruta segura
 
-## 📚 Próximos pasos / Mejoras
+1. Calcula la ruta con las dimensiones de tu vehículo.
+2. La app muestra **Ruta para tu vehículo** (verde) y **Ruta convencional coche** (azul) con su diferencia.
+3. Pulsa **"Navegar por TU ruta"**: la app decodifica el polyline, toma 6 puntos intermedios y los inyecta como waypoints en Google Maps (o navega en Waze), obligando al navegador a seguir tu ruta y no la de coche.
 
-- [ ] Añadir pruebas unitarias y de integración (backend.
-- [ ]**
-- [ ] Docker** oficial para el yun CI/CD para pruebas a y despliegue automático.
-- [ ] Ampliar el motor de rutas para soportar otros proveedores (ORS, Mapbox, etc.) como fallback.
-- [ ] Internacionalización (i18n) de la interfaz.
-- [ ] Sistema de autenticación y guardado de rutas favoritas.
+> Google Maps no conoce las restricciones de tu vehículo: por eso la ruta convencional se muestra aparte, y la navegación segura se fuerza con waypoints.
+
+## 📚 Próximos pasos
+
+- [ ] Dominio propio para el frontend (`busroad.kavanasystems.com`, CNAME pendiente en Namecheap)
+- [ ] Pruebas unitarias e integración (pytest) del backend
+- [ ] CI/CD con GitHub Actions
+- [ ] Internacionalización (i18n)
+- [ ] Autenticación y guardado de rutas favoritas
 
 ## 📄 Licencia
 
-Este proyecto es privado y pertenece a Kavana Systems. No se redistribuye sin permiso explícito.
+Proyecto privado de Kavana Systems. No se redistribuye sin permiso explícito.
 
 ## 🙏 Créditos
 
-- Inspirado por los desafíos reales de transporte de carga sobredimensionada.
-- Utiliza Google Routes API para cálculo de rutas con restricciones de vehículos.
+- Inspirado por un problema real: un conductor de autobús recién titulado planificaba rutas con Google Maps sin saber si su vehículo pasaba por puentes y calles.
+- Motor: OpenRouteService (perfil `driving-hgv`) con restricciones de OpenStreetMap.
 - Desarrollado con ☕ y 🚍 por el equipo de Kavana.
 
---- 
+---
 
-*README creado el 2025-08-04 por Hermes Agent siguiendo los estándares de Kavana Engineering.*
+*README actualizado el 2026-08-04 por Hermes Agent siguiendo los estándares de Kavana Engineering.*

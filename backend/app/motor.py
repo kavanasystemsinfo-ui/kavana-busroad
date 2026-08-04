@@ -47,40 +47,25 @@ class RutaResponse(BaseModel):
 
 
 # ------------------------------------------------------------------ helpers
-async def _geocodificar(api_key: str, texto: str) -> tuple[float, float] | None:
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(GOOGLE_GEOCODE_URL, params={"address": texto, "key": api_key})
-        if r.status_code != 200:
-            return None
-        loc = r.json().get("results", [{}])[0].get("geometry", {}).get("location")
-        if not loc:
-            return None
-        return loc["lat"], loc["lng"]
-
-
 async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
-    """Ruta real con restricciones del vehículo (Routes API Preferred)."""
-    origen = await _geocodificar(api_key, req.origen)
-    destino = await _geocodificar(api_key, req.destino)
-    if not origen or not destino:
-        raise ValueError("No pude localizar origen o destino. Prueba con nombres más exactos.")
+    """Ruta real con restricciones del vehículo (Routes API Preferred).
 
-    v = req.vehiculo
+    Se envían origen/destino como direcciones de texto directamente
+    (la API las geocodifica internamente), evitando depender de la
+    Geocoding API.
+
+    NOTA: el campo `vehicle.dimensionInfo/weightInfo` (restricciones de
+    dimensiones) solo está disponible en EE.UU. en Routes API. Fuera de
+    EE.UU. (España) el campo ni siquiera se acepta en el payload, por lo
+    que se omite y se calcula la ruta estándar de conducción.
+    """
     payload = {
-        "origin": {"location": {"latLng": {"latitude": origen[0], "longitude": origen[1]}}},
-        "destination": {"location": {"latLng": {"latitude": destino[0], "longitude": destino[1]}}},
+        "origin": {"address": req.origen},
+        "destination": {"address": req.destino},
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE",
         "vehicle": {
             "vehicleType": "AUTOMOBILE",
-            "dimensionInfo": {
-                "length": {"value": v.largo_m, "unit": "METERS"},
-                "width": {"value": v.ancho_m, "unit": "METERS"},
-                "height": {"value": v.alto_m, "unit": "METERS"},
-            },
-            "weightInfo": {
-                "weight": {"value": float(v.peso_kg), "unit": "KILOGRAMS"},
-            },
         },
     }
     headers = {
@@ -93,6 +78,11 @@ async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
     }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(GOOGLE_ROUTES_URL, json=payload, headers=headers)
+    if r.status_code != 200:
+        # Sin soporte de vehículo en esta cuenta, reintento sin el campo
+        payload.pop("vehicle", None)
+        async with httpx.AsyncClient(timeout=30) as client2:
+            r = await client2.post(GOOGLE_ROUTES_URL, json=payload, headers=headers)
     if r.status_code != 200:
         raise ValueError(f"Google Routes respondió {r.status_code}: {r.text[:300]}")
 

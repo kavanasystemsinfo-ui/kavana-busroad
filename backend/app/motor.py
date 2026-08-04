@@ -1,6 +1,13 @@
-"""Motor de rutas: Google Routes API con dimensiones de vehículo.
+"""Motor de rutas para vehículos grandes con restricciones de dimensiones.
 
-Sin GOOGLE_API_KEY responde con una ruta de ejemplo para poder desarrollar.
+Motores (en orden de preferencia):
+1. OpenRouteService (perfil driving-hgv): restricciones de altura/anchura/
+   largo/peso REALES en Europa (datos OpenStreetMap). Requiere ORS_API_KEY.
+2. Google Routes API: ruta estándar de conducción (Google no soporta
+   restricciones de dimensiones fuera de EE.UU.). Requiere GOOGLE_API_KEY.
+3. Mock: respuesta de ejemplo sin ninguna clave para desarrollo.
+
+Sin claves responde con una ruta de ejemplo (mock).
 """
 
 import os
@@ -11,8 +18,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1", tags=["ruta"])
 
+ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-hgv"
+ORS_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
 GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
-GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 
 
 # ------------------------------------------------------------------ esquemas
@@ -43,30 +51,83 @@ class RutaResponse(BaseModel):
     polyline: str
     pasos: list[str]
     riesgos: list[PuntoRiesgo] = []
-    motor: str  # "google-routes" | "mock"
+    motor: str  # "openrouteservice" | "google-routes" | "mock"
 
 
 # ------------------------------------------------------------------ helpers
+async def _geocodificar_ors(api_key: str, texto: str) -> list[float] | None:
+    """Convierte una dirección en coordenadas [lng, lat] con ORS."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(
+            ORS_GEOCODE_URL,
+            params={"text": texto, "api_key": api_key, "size": 1},
+        )
+    if r.status_code != 200:
+        return None
+    feats = r.json().get("features", [])
+    if not feats:
+        return None
+    return feats[0].get("geometry", {}).get("coordinates")
+
+
+async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
+    """Ruta con restricciones reales de dimensiones (perfil driving-hgv)."""
+    origen = await _geocodificar_ors(api_key, req.origen)
+    destino = await _geocodificar_ors(api_key, req.destino)
+    if not origen or not destino:
+        raise ValueError("No pude localizar origen o destino. Prueba con nombres más exactos.")
+
+    v = req.vehiculo
+    payload = {
+        "coordinates": [origen, destino],
+        "options": {
+            "profile_params": {
+                "restrictions": {
+                    "height": v.alto_m,
+                    "width": v.ancho_m,
+                    "length": v.largo_m,
+                    "weight": float(v.peso_kg),
+                }
+            }
+        },
+    }
+    async with httpx.AsyncClient(timeout=40) as client:
+        r = await client.post(
+            ORS_DIRECTIONS_URL,
+            json=payload,
+            headers={"Authorization": api_key, "Content-Type": "application/json"},
+        )
+    if r.status_code != 200:
+        raise ValueError(f"OpenRouteService respondió {r.status_code}: {r.text[:300]}")
+
+    feat = r.json().get("features", [{}])[0]
+    props = feat.get("properties", {})
+    summary = props.get("summary", {})
+    pasos = []
+    for seg in props.get("segments", []):
+        for step in seg.get("steps", []):
+            instr = step.get("instruction", {})
+            txt = instr.get("text") or instr.get("name") or ""
+            if txt:
+                pasos.append(txt)
+    return RutaResponse(
+        origen=req.origen,
+        destino=req.destino,
+        distancia_km=round(summary.get("distance", 0) / 1000, 1),
+        duracion_min=round(summary.get("duration", 0) / 60, 1),
+        polyline=feat.get("geometry", ""),
+        pasos=pasos[:15],
+        motor="openrouteservice",
+    )
+
+
 async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
-    """Ruta real con restricciones del vehículo (Routes API Preferred).
-
-    Se envían origen/destino como direcciones de texto directamente
-    (la API las geocodifica internamente), evitando depender de la
-    Geocoding API.
-
-    NOTA: el campo `vehicle.dimensionInfo/weightInfo` (restricciones de
-    dimensiones) solo está disponible en EE.UU. en Routes API. Fuera de
-    EE.UU. (España) el campo ni siquiera se acepta en el payload, por lo
-    que se omite y se calcula la ruta estándar de conducción.
-    """
+    """Ruta estándar de conducción (Google no aplica dimensiones en Europa)."""
     payload = {
         "origin": {"address": req.origen},
         "destination": {"address": req.destino},
         "travelMode": "DRIVE",
         "routingPreference": "TRAFFIC_AWARE",
-        "vehicle": {
-            "vehicleType": "AUTOMOBILE",
-        },
     }
     headers = {
         "X-Goog-Api-Key": api_key,
@@ -78,11 +139,6 @@ async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
     }
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(GOOGLE_ROUTES_URL, json=payload, headers=headers)
-    if r.status_code != 200:
-        # Sin soporte de vehículo en esta cuenta, reintento sin el campo
-        payload.pop("vehicle", None)
-        async with httpx.AsyncClient(timeout=30) as client2:
-            r = await client2.post(GOOGLE_ROUTES_URL, json=payload, headers=headers)
     if r.status_code != 200:
         raise ValueError(f"Google Routes respondió {r.status_code}: {r.text[:300]}")
 
@@ -105,7 +161,7 @@ async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
 
 
 def _mock(req: RutaRequest) -> RutaResponse:
-    """Ruta de ejemplo para desarrollo sin clave de Google."""
+    """Ruta de ejemplo para desarrollo sin claves."""
     return RutaResponse(
         origen=req.origen,
         destino=req.destino,
@@ -131,11 +187,22 @@ def _mock(req: RutaRequest) -> RutaResponse:
 # ------------------------------------------------------------------- rutas
 @router.post("/ruta", response_model=RutaResponse)
 async def calcular_ruta(req: RutaRequest):
-    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
-    if not api_key:
-        return _mock(req)
-    try:
-        return await _calcular_google(api_key, req)
-    except ValueError as e:
-        # Sin geocodificación posible, devolvemos el mock con aviso
-        return _mock(req)
+    ors_key = os.environ.get("ORS_API_KEY", "").strip()
+    google_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+
+    # 1. OpenRouteService: restricciones de dimensiones reales en Europa
+    if ors_key:
+        try:
+            return await _calcular_ors(ors_key, req)
+        except ValueError as e:
+            return _mock(req)
+
+    # 2. Google Routes: ruta estándar (sin dimensiones fuera de EE.UU.)
+    if google_key:
+        try:
+            return await _calcular_google(google_key, req)
+        except ValueError:
+            return _mock(req)
+
+    # 3. Sin claves: mock para desarrollo
+    return _mock(req)

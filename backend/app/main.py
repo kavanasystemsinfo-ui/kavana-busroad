@@ -39,4 +39,10 @@ app.include_router(motor_router)
 
 @app.get("/api/v1/health")
 def health():
-    return {"status": "ok", "motor": "google-routes" if __import__("os").environ.get("GOOGLE_API_KEY") else "mock"}
+    import os
+    motor = "mock"
+    if os.environ.get("ORS_API_KEY"):
+        motor = "openrouteservice"
+    elif os.environ.get("GOOGLE_API_KEY"):
+        motor = "google-routes"
+    return {"status": "ok", "motor": motor}

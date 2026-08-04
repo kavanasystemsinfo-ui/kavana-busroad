@@ -13,7 +13,7 @@ Sin claves responde con una ruta de ejemplo (mock).
 import os
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1", tags=["ruta"])
@@ -55,68 +55,80 @@ class RutaResponse(BaseModel):
 
 
 # ------------------------------------------------------------------ helpers
-async def _geocodificar_ors(api_key: str, texto: str) -> list[float] | None:
-    """Convierte una dirección en coordenadas [lng, lat] con ORS."""
+async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
+    """Convierte una dirección en candidatos [lng, lat] con ORS.
+
+    Fuerza España (boundary.country=ESP) para que "Higueruelas" no
+    resuelva a "Higueruela" (Albacete), y devuelve varios candidatos
+    por si el primero no es enrutable.
+    """
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
             ORS_GEOCODE_URL,
-            params={"text": texto, "api_key": api_key, "size": 1},
+            params={"text": texto, "api_key": None, "size": 3, "boundary.country": "ESP"},
+            headers={"Authorization": api_key},
         )
     if r.status_code != 200:
-        return None
-    feats = r.json().get("features", [])
-    if not feats:
-        return None
-    return feats[0].get("geometry", {}).get("coordinates")
+        return []
+    return [
+        f["geometry"]["coordinates"]
+        for f in r.json().get("features", [])
+        if f.get("geometry", {}).get("coordinates")
+    ]
 
 
 async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
-    """Ruta con restricciones reales de dimensiones (perfil driving-hgv)."""
-    origen = await _geocodificar_ors(api_key, req.origen)
-    destino = await _geocodificar_ors(api_key, req.destino)
-    if not origen or not destino:
+    """Ruta con restricciones reales de dimensiones (perfil driving-hgv).
+
+    Prueba combinaciones de candidatos origen/destino hasta encontrar una
+    ruta enrutable (el primer candidato puede caer en una zona sin vías).
+    """
+    origenes = await _geocodificar_ors(api_key, req.origen)
+    destinos = await _geocodificar_ors(api_key, req.destino)
+    if not origenes or not destinos:
         raise ValueError("No pude localizar origen o destino. Prueba con nombres más exactos.")
 
     v = req.vehiculo
-    payload = {
-        "coordinates": [origen, destino],
-        "options": {
-            "profile_params": {
-                "restrictions": {
-                    "height": v.alto_m,
-                    "width": v.ancho_m,
-                    "length": v.largo_m,
-                    "weight": float(v.peso_kg),
-                }
-            }
-        },
+    restricciones = {
+        "height": v.alto_m,
+        "width": v.ancho_m,
+        "length": v.largo_m,
+        "weight": float(v.peso_kg),
     }
-    async with httpx.AsyncClient(timeout=40) as client:
-        r = await client.post(
-            ORS_DIRECTIONS_URL,
-            json=payload,
-            headers={"Authorization": api_key, "Content-Type": "application/json"},
-        )
-    if r.status_code != 200:
-        raise ValueError(f"OpenRouteService respondió {r.status_code}: {r.text[:300]}")
-
-    route = r.json().get("routes", [{}])[0]
-    summary = route.get("summary", {})
-    pasos = []
-    for seg in route.get("segments", []):
-        for step in seg.get("steps", []):
-            txt = step.get("instruction") or step.get("name") or ""
-            if txt:
-                pasos.append(txt)
-    return RutaResponse(
-        origen=req.origen,
-        destino=req.destino,
-        distancia_km=round(summary.get("distance", 0) / 1000, 1),
-        duracion_min=round(summary.get("duration", 0) / 60, 1),
-        polyline=route.get("geometry", ""),
-        pasos=pasos[:15],
-        motor="openrouteservice",
-    )
+    ultimo_error = "Sin ruta enrutable entre origen y destino."
+    for o in origenes[:2]:
+        for d in destinos[:2]:
+            payload = {
+                "coordinates": [o, d],
+                "radiuses": [1500, 1500],
+                "options": {"profile_params": {"restrictions": restricciones}},
+            }
+            async with httpx.AsyncClient(timeout=40) as client:
+                r = await client.post(
+                    ORS_DIRECTIONS_URL,
+                    json=payload,
+                    headers={"Authorization": api_key, "Content-Type": "application/json"},
+                )
+            if r.status_code == 200:
+                route = r.json().get("routes", [{}])[0]
+                summary = route.get("summary", {})
+                pasos = []
+                for seg in route.get("segments", []):
+                    for step in seg.get("steps", []):
+                        txt = step.get("instruction") or step.get("name") or ""
+                        if txt:
+                            pasos.append(txt)
+                return RutaResponse(
+                    origen=req.origen,
+                    destino=req.destino,
+                    distancia_km=round(summary.get("distance", 0) / 1000, 1),
+                    duracion_min=round(summary.get("duration", 0) / 60, 1),
+                    polyline=route.get("geometry", ""),
+                    pasos=pasos[:15],
+                    motor="openrouteservice",
+                )
+            ultimo_error = f"OpenRouteService respondió {r.status_code}: {r.text[:120]}"
+    raise ValueError(ultimo_error)
 
 
 async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
@@ -193,14 +205,15 @@ async def calcular_ruta(req: RutaRequest):
         try:
             return await _calcular_ors(ors_key, req)
         except ValueError as e:
-            return _mock(req)
+            # Sin claves no hay nada que devolver; con claves, el error es real
+            raise HTTPException(status_code=422, detail=str(e))
 
     # 2. Google Routes: ruta estándar (sin dimensiones fuera de EE.UU.)
     if google_key:
         try:
             return await _calcular_google(google_key, req)
-        except ValueError:
-            return _mock(req)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
     # 3. Sin claves: mock para desarrollo
     return _mock(req)

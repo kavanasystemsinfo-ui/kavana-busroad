@@ -17,6 +17,15 @@ const dimensiones = ref({
 // Use environment variable for API URL, fallback to production backend
 const API_URL = import.meta.env.VITE_API_URL || 'https://busroad-api.kavanasystems.com'
 
+// URLs para abrir la ruta en apps de navegación (se actualizan tras calcular)
+const mapsUrl = ref('')
+const wazeUrl = ref('')
+
+const abrirEnMapas = (origen: string, destino: string) => {
+  mapsUrl.value = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origen)}&destination=${encodeURIComponent(destino)}&travelmode=driving`
+  wazeUrl.value = `https://www.waze.com/ul?q=${encodeURIComponent(destino)}&navigate=yes`
+}
+
 const calcularRuta = async () => {
   loading.value = true
   error.value = null
@@ -38,6 +47,7 @@ const calcularRuta = async () => {
     }
     const data = await response.json()
     result.value = data
+    abrirEnMapas(origen.value, destino.value)
   } catch (e: any) {
     error.value = e.message || 'Error desconocido'
     console.error(e)
@@ -96,6 +106,15 @@ const calcularRuta = async () => {
       <p><strong>Distancia:</strong> {{ result.distancia_km }} km</p>
       <p><strong>Duración:</strong> {{ result.duracion_min }} min</p>
       <p><strong>Motor:</strong> {{ result.motor }}</p>
+
+      <div class="maps-actions">
+        <a class="maps-btn" :href="mapsUrl" target="_blank" rel="noopener">
+          📍 Abrir en Google Maps
+        </a>
+        <a class="maps-btn alt" :href="wazeUrl" target="_blank" rel="noopener">
+          🚗 Abrir en Waze
+        </a>
+      </div>
 
       <h3>Pasos:</h3>
       <ol>
@@ -169,6 +188,31 @@ button:disabled {
   border-radius: 4px;
   margin-top: 10px;
   border: 1px solid #fcc;
+}
+.maps-actions {
+  display: flex;
+  gap: 10px;
+  margin: 15px 0;
+  flex-wrap: wrap;
+}
+.maps-btn {
+  display: inline-block;
+  background-color: #007bff;
+  color: white;
+  padding: 10px 16px;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 15px;
+  transition: background-color 0.3s;
+}
+.maps-btn:hover {
+  background-color: #0056b3;
+}
+.maps-btn.alt {
+  background-color: #4caf50;
+}
+.maps-btn.alt:hover {
+  background-color: #388e3c;
 }
 .result {
   margin-top: 20px;

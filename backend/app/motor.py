@@ -101,6 +101,7 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
             payload = {
                 "coordinates": [o, d],
                 "radiuses": [1500, 1500],
+                "language": "es",
                 "options": {"profile_params": {"restrictions": restricciones}},
             }
             async with httpx.AsyncClient(timeout=40) as client:

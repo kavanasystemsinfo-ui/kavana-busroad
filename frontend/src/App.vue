@@ -121,12 +121,15 @@ const calcularRuta = async () => {
         <li v-for="(paso, index) in result.pasos" :key="index">{{ paso }}</li>
       </ol>
 
-      <h3>Riesgos:</h3>
-      <ul>
+      <h3 v-if="result.riesgos && result.riesgos.length > 0">Riesgos:</h3>
+      <ul v-if="result.riesgos && result.riesgos.length > 0">
         <li v-for="(riesgo, index) in result.riesgos" :key="index">
           <strong>{{ riesgo.nombre }}</strong> ({{ riesgo.tipo }}): {{ riesgo.descripcion }}
         </li>
       </ul>
+      <p v-else class="no-riesgos">
+        ✅ Ruta calculada evitando las restricciones de tu vehículo
+      </p>
     </div>
   </div>
 </template>
@@ -213,6 +216,11 @@ button:disabled {
 }
 .maps-btn.alt:hover {
   background-color: #388e3c;
+}
+.no-riesgos {
+  color: #28a745;
+  font-size: 14px;
+  margin-top: 8px;
 }
 .result {
   margin-top: 20px;

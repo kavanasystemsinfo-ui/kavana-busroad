@@ -100,14 +100,12 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     if r.status_code != 200:
         raise ValueError(f"OpenRouteService respondió {r.status_code}: {r.text[:300]}")
 
-    feat = r.json().get("features", [{}])[0]
-    props = feat.get("properties", {})
-    summary = props.get("summary", {})
+    route = r.json().get("routes", [{}])[0]
+    summary = route.get("summary", {})
     pasos = []
-    for seg in props.get("segments", []):
+    for seg in route.get("segments", []):
         for step in seg.get("steps", []):
-            instr = step.get("instruction", {})
-            txt = instr.get("text") or instr.get("name") or ""
+            txt = step.get("instruction") or step.get("name") or ""
             if txt:
                 pasos.append(txt)
     return RutaResponse(
@@ -115,7 +113,7 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
         destino=req.destino,
         distancia_km=round(summary.get("distance", 0) / 1000, 1),
         duracion_min=round(summary.get("duration", 0) / 60, 1),
-        polyline=feat.get("geometry", ""),
+        polyline=route.get("geometry", ""),
         pasos=pasos[:15],
         motor="openrouteservice",
     )

@@ -27,6 +27,12 @@ spec:
                   name: busroad-secrets
                   key: google_api_key
                   optional: true
+            - name: ORS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: busroad-secrets
+                  key: ors_api_key
+                  optional: true
           resources:
             requests:
               cpu: 100m

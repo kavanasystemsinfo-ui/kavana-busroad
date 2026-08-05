@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
+import RouteMap from './components/RouteMap.vue'
 
 // ---------- Estado de pestañas ----------
 const activeTab = ref<'ruta' | 'vehiculo' | 'favoritos' | 'config'>('ruta')
@@ -241,14 +242,44 @@ const decodePolyline = (encoded: string): [number, number][] => {
   return points
 }
 
-const sampleWaypoints = (points: [number, number][], n: number): [number, number][] => {
-  if (points.length <= n) return points.slice(1, -1)
-  const step = (points.length - 1) / (n - 1)
-  const out: [number, number][] = []
-  for (let i = 0; i < n; i++) {
-    out.push(points[Math.round(i * step)])
+// Extrae SOLO los vértices donde la ruta cambia de dirección (curvas, salidas, cruces)
+// Así Google Maps se ve obligado a seguir el recorrido en los puntos críticos,
+// y en tramos rectos no desperdiciamos waypoints.
+const sampleWaypoints = (points: [number, number][], maxN: number = 8): [number, number][] => {
+  if (points.length <= 2) return []
+  const THRESHOLD = 12 // grados mínimos de cambio de dirección para contar como vértice
+  const vertices: [number, number][] = []
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = points[i - 1], b = points[i], c = points[i + 1]
+    const ang1 = Math.atan2(b[0] - a[0], b[1] - a[1])
+    const ang2 = Math.atan2(c[0] - b[0], c[1] - b[1])
+    let diff = Math.abs(ang2 - ang1) * 180 / Math.PI
+    if (diff > 180) diff = 360 - diff
+    if (diff > THRESHOLD) vertices.push(b)
   }
-  return out.slice(1, -1)
+
+  // Si hay demasiados vértices (ruta muy tortuosa), muestrear uniformemente entre ellos
+  let chosen: [number, number][]
+  if (vertices.length <= maxN) {
+    chosen = vertices
+  } else {
+    chosen = []
+    const step = (vertices.length - 1) / (maxN - 1)
+    for (let i = 0; i < maxN; i++) {
+      chosen.push(vertices[Math.round(i * step)])
+    }
+  }
+
+  // Si la ruta es casi recta (pocos vértices), muestrear uniformemente para tener algunos waypoints
+  if (chosen.length < 3) {
+    chosen = []
+    const step = (points.length - 1) / (maxN + 1)
+    for (let i = 1; i <= maxN; i++) {
+      chosen.push(points[Math.round(i * step)])
+    }
+  }
+  return chosen
 }
 
 const abrirEnMapas = (origen: string, destino: string, polyline?: string) => {
@@ -376,6 +407,16 @@ const calcularRuta = async () => {
             <button class="fav-btn" @click="guardarFavorito">⭐ Guardar</button>
           </div>
 
+          <!-- Mapa con la geometría exacta de ORS (fuente de verdad) -->
+          <RouteMap
+            :polyline-segura="result.polyline"
+            :polyline-convencional="result.convencional?.polyline"
+            :origen="result.origen"
+            :destino="result.destino"
+            :color-segura="temaActual.primary"
+            :color-convencional="'#64748b'"
+          />
+
           <!-- Ruta segura -->
           <div class="route-card safe">
             <div class="route-flood safe">
@@ -448,7 +489,7 @@ const calcularRuta = async () => {
             </div>
           </div>
 
-          <p class="maps-note">Google Maps no conoce las restricciones de tu vehículo. Los botones de la ruta segura fuerzan tu itinerario con puntos de paso.</p>
+          <p class="maps-note">⚠️ BusRoad planifica la ruta con las restricciones de tu vehículo. Al pulsar "Iniciar Navegación", el navegador (Google Maps/Waze) puede adaptar ligeramente el recorrido por tráfico u otras condiciones, pero los waypoints en los cruces clave mantienen el itinerario optimizado.</p>
 
           <!-- Pasos -->
           <h3 class="section-title">Pasos</h3>
@@ -649,10 +690,10 @@ body {
 }
 
 /* Fuentes */
-.font-pequeno { font-size: 13px; }
+.font-pequeno { font-size: 12px; }
 .font-normal { font-size: 15px; }
-.font-grande { font-size: 17px; }
-.font-muy-grande { font-size: 19px; }
+.font-grande { font-size: 18px; }
+.font-muy-grande { font-size: 22px; }
 
 .app-title {
   font-size: 1.6em;

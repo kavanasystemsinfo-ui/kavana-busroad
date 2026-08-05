@@ -27,7 +27,6 @@ app.add_middleware(
         "https://busroad.kavanasystems.com",
         "https://kavana-busroad.vercel.app",
         "https://frontend-605yf47nv-vistaprods-projects.vercel.app",
-        "https://frontend-alpha-eight-85.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],

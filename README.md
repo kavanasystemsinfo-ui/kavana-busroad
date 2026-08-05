@@ -197,6 +197,8 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 
 ## 📚 Próximos pasos
 
+- [ ] **Migrar backend de k3s (VPS) a Fly.io** (decisión 2026-08-05): el VPS es el laboratorio de trabajo, no producción. Backend en servicio independiente como el resto del portfolio. Incluye: desplegar Dockerfile en Fly.io, mover claves a secrets de Fly, actualizar `VITE_API_URL` del frontend, actualizar ADR 001 y landing.
+- [ ] APK para el hermano (Capacitor + Android Studio) con ajustes: vehículo precargado, tema, quitar comparación
 - [ ] Dominio propio para el frontend (`busroad.kavanasystems.com`, CNAME pendiente en Namecheap)
 - [ ] Pruebas unitarias e integración (pytest) del backend
 - [ ] CI/CD con GitHub Actions

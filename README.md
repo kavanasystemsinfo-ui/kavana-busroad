@@ -191,6 +191,9 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 | ADR | Decisión |
 |---|---|
 | [001](docs/adr/001-motor-planificacion-vs-navegacion.md) | Separación entre motor de planificación (ORS + Leaflet) y motor de navegación (Google/Waze como clientes) |
+| [002](docs/adr/002-preservacion-geometria-ors-cliente.md) | Preservación de la geometría completa de ORS en el cliente (Leaflet la representa íntegramente) |
+| [003](docs/adr/003-seleccion-waypoints-cambios-direccion.md) | Selección de waypoints basada en cambios de dirección > 12° (no muestreo uniforme) |
+| [004](docs/adr/004-comparacion-ruta-estandar-vs-hgv.md) | Comparación simultánea de ruta estándar y ruta HGV como decisión de UX + técnica |
 
 ## 📚 Próximos pasos
 

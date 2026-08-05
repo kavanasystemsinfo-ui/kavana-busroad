@@ -372,9 +372,14 @@ const calcularRuta = async () => {
             <span class="vehicle-profile-icon">🚌</span>
             <div class="vehicle-profile-text">
               <span class="vehicle-profile-label">PERFIL ACTIVO</span>
-              <span v-if="vehiculoActivo" class="vehicle-profile-name">{{ vehiculoActivo.nombre }} ({{ vehiculoActivo.alto_m }} m alto)</span>
+              <span v-if="vehiculoActivo" class="vehicle-profile-name">{{ vehiculoActivo.nombre }}</span>
               <span v-else class="vehicle-profile-name">Sin vehículo seleccionado</span>
             </div>
+          </div>
+          <div v-if="vehiculoActivo" class="vehicle-dims">
+            <span class="vd-item" title="Altura"><b>{{ vehiculoActivo.alto_m }}</b> m</span>
+            <span class="vd-item" title="Peso"><b>{{ (vehiculoActivo.peso_kg / 1000).toFixed(1) }}</b> t</span>
+            <span class="vd-item" title="Longitud"><b>{{ vehiculoActivo.largo_m }}</b> m</span>
           </div>
           <button class="edit-btn" @click="activeTab = 'vehiculo'">EDITAR</button>
         </div>
@@ -402,10 +407,7 @@ const calcularRuta = async () => {
 
         <!-- Resultado -->
         <template v-if="result">
-          <div class="result-header-row">
-            <h2>Rutas sugeridas</h2>
-            <button class="fav-btn" @click="guardarFavorito">⭐ Guardar</button>
-          </div>
+          <h2 class="section-title">Rutas sugeridas</h2>
 
           <!-- Mapa con la geometría exacta de ORS (fuente de verdad) -->
           <RouteMap
@@ -420,7 +422,7 @@ const calcularRuta = async () => {
           <!-- Ruta segura -->
           <div class="route-card safe">
             <div class="route-flood safe">
-              <span>✅</span><span>RUTA SEGURA PARA TU VEHÍCULO</span>
+              <span>🛡️</span><span>COMPATIBLE CON TU VEHÍCULO</span>
             </div>
             <div class="route-body">
               <div class="route-main">
@@ -437,6 +439,10 @@ const calcularRuta = async () => {
                 <span class="chip">🚦 {{ result.pasos?.length || 0 }} pasos</span>
                 <span class="chip">🚌 {{ vehiculoActivo?.nombre || 'vehículo configurado' }}</span>
               </div>
+              <div class="compat-box">
+                <span class="compat-title">✓ Calculado con las restricciones:</span>
+                <span class="compat-tags">altura · peso · longitud · anchura</span>
+              </div>
               <div class="route-nav">
                 <a v-if="mapsSeguraUrl" class="nav-btn-main" :href="mapsSeguraUrl" target="_blank" rel="noopener">
                   Iniciar Navegación <span>🧭</span>
@@ -444,6 +450,7 @@ const calcularRuta = async () => {
                 <a v-if="wazeSeguraUrl" class="nav-btn-alt" :href="wazeSeguraUrl" target="_blank" rel="noopener">
                   Waze
                 </a>
+                <button class="nav-btn-alt fav-inline" @click="guardarFavorito" title="Guardar esta ruta">⭐</button>
               </div>
             </div>
           </div>
@@ -489,7 +496,10 @@ const calcularRuta = async () => {
             </div>
           </div>
 
-          <p class="maps-note">⚠️ BusRoad planifica la ruta con las restricciones de tu vehículo. Al pulsar "Iniciar Navegación", el navegador (Google Maps/Waze) puede adaptar ligeramente el recorrido por tráfico u otras condiciones, pero los waypoints en los cruces clave mantienen el itinerario optimizado.</p>
+          <div class="nav-note-badge">
+            <span>🧭</span>
+            <span>Ruta calculada considerando altura, peso y longitud del vehículo. El navegador puede adaptar el recorrido por tráfico.</span>
+          </div>
 
           <!-- Pasos -->
           <h3 class="section-title">Pasos</h3>
@@ -884,6 +894,27 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 
 .vehicle-profile-name { font-size: 0.9em; font-weight: 600; color: #e5e7eb; }
 
+.vehicle-dims {
+  display: flex;
+  gap: 4px;
+  margin-right: 4px;
+}
+
+.vd-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  background: #1a1d27;
+  border: 1px solid #2a2e3a;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.72em;
+  color: #9ca3af;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.vd-item b { color: var(--tema-primary); font-size: 1.05em; }
+
 .edit-btn {
   background: rgba(167, 139, 250, 0.12);
   color: var(--tema-primary);
@@ -989,6 +1020,36 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 
 .route-nav { display: flex; gap: 8px; }
 
+.fav-inline {
+  padding: 12px;
+  font-size: 1.1em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.compat-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.compat-title {
+  font-size: 0.8em;
+  font-weight: 700;
+  color: #4ade80;
+}
+
+.compat-tags {
+  font-size: 0.72em;
+  color: #9ca3af;
+  font-family: 'JetBrains Mono', monospace;
+}
+
 .nav-btn-main {
   flex: 1;
   display: flex;
@@ -1073,6 +1134,19 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 }
 
 .maps-note { font-size: 0.78em; color: #6b7280; margin: 4px 0 16px; font-style: italic; }
+
+.nav-note-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #1a1d27;
+  border: 1px solid #2a2e3a;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.8em;
+  color: #9ca3af;
+  margin-bottom: 16px;
+}
 
 .no-riesgos { color: #4ade80; font-size: 0.9em; margin-top: 8px; }
 

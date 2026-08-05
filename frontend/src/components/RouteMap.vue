@@ -66,8 +66,8 @@ const renderMapa = () => {
   if (ptsConv && ptsConv.length > 1) {
     L.polyline(ptsConv, {
       color: props.colorConvencional || '#64748b',
-      weight: 4,
-      opacity: 0.55,
+      weight: 3,
+      opacity: 0.6,
       dashArray: '6 6'
     }).addTo(layerConvencional)
   }
@@ -77,7 +77,7 @@ const renderMapa = () => {
     L.polyline(ptsSegura, {
       color: props.colorSegura,
       weight: 6,
-      opacity: 0.9
+      opacity: 0.95
     }).addTo(layerSegura)
   }
 
@@ -95,11 +95,11 @@ const renderMapa = () => {
     }).addTo(layerSegura).bindPopup(props.destino)
   }
 
-  // Ajustar vista a la ruta segura
+  // Ajustar vista a la ruta segura (padding pequeño: la ruta ocupa ~80% del mapa)
   if (ptsSegura.length > 1) {
-    map.fitBounds(L.latLngBounds(ptsSegura), { padding: [30, 30] })
+    map.fitBounds(L.latLngBounds(ptsSegura), { padding: [18, 18], maxZoom: 15 })
   } else if (ptsConv && ptsConv.length > 1) {
-    map.fitBounds(L.latLngBounds(ptsConv), { padding: [30, 30] })
+    map.fitBounds(L.latLngBounds(ptsConv), { padding: [18, 18], maxZoom: 15 })
   }
 
   // Si el mapa está en un contenedor oculto, invalidar tamaño al mostrar
@@ -119,8 +119,8 @@ watch(() => [props.polylineSegura, props.polylineConvencional, props.colorSegura
   <div class="route-map-wrap">
     <div ref="mapEl" class="route-map"></div>
     <div class="map-legend">
-      <span class="legend-item"><span class="legend-line segura"></span> Ruta BusRoad</span>
-      <span v-if="props.polylineConvencional" class="legend-item"><span class="legend-line conv"></span> Ruta coche</span>
+      <span class="legend-item"><span class="legend-dot" :style="{ background: props.colorSegura }"></span> Ruta compatible con el vehículo</span>
+      <span v-if="props.polylineConvencional" class="legend-item"><span class="legend-dot std"></span> Ruta estándar</span>
     </div>
   </div>
 </template>
@@ -142,19 +142,15 @@ watch(() => [props.polylineSegura, props.polylineConvencional, props.colorSegura
 }
 
 .map-legend {
-  position: absolute;
-  bottom: 10px;
-  left: 10px;
-  z-index: 400;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: rgba(15, 17, 23, 0.85);
-  backdrop-filter: blur(6px);
+  gap: 16px;
+  align-items: center;
+  background: #1a1d27;
   border: 1px solid #2a2e3a;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 0.7em;
+  border-top: none;
+  border-radius: 0 0 14px 14px;
+  padding: 8px 14px;
+  font-size: 0.72em;
   font-weight: 600;
   color: #d1d5db;
 }
@@ -165,13 +161,14 @@ watch(() => [props.polylineSegura, props.polylineConvencional, props.colorSegura
   gap: 6px;
 }
 
-.legend-line {
-  width: 18px;
-  height: 3px;
-  border-radius: 2px;
+.legend-dot {
+  width: 14px;
+  height: 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
 }
 
-.legend-line.segura { background: v-bind(props.colorSegura); }
-
-.legend-line.conv { background: v-bind(props.colorConvencional || '#64748b'); border-top: 1px dashed #64748b; }
+.legend-dot.std {
+  background: repeating-linear-gradient(90deg, #64748b 0 4px, transparent 4px 7px);
+}
 </style>

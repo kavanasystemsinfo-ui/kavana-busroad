@@ -18,3 +18,4 @@ dist/
 # K3s / local
 k3s-kubeconfig.yaml
 frontend/.vercel
+frontend/src/App.vue.bak

@@ -179,10 +179,18 @@ Respuesta: distancia, duración, polyline, pasos en español, y la ruta convenci
 ## 🧭 Cómo navegar con la ruta segura
 
 1. Calcula la ruta con las dimensiones de tu vehículo.
-2. La app muestra **Ruta para tu vehículo** (verde) y **Ruta convencional coche** (azul) con su diferencia.
-3. Pulsa **"Navegar por TU ruta"**: la app decodifica el polyline, toma 6 puntos intermedios y los inyecta como waypoints en Google Maps (o navega en Waze), obligando al navegador a seguir tu ruta y no la de coche.
+2. La app muestra **la geometría exacta de ORS** en un mapa Leaflet (ruta segura en color del tema, convencional en gris punteado) y las dos tarjetas comparativas con tiempo/distancia.
+3. Pulsa **"Iniciar Navegación"**: la app extrae los **vértices con cambio de dirección > 12°** (cruces, salidas, curvas) de la geometría y los inyecta como waypoints en Google Maps (o navega en Waze), obligando al navegador a mantener el itinerario optimizado.
 
-> Google Maps no conoce las restricciones de tu vehículo: por eso la ruta convencional se muestra aparte, y la navegación segura se fuerza con waypoints.
+> **Arquitectura**: BusRoad es la fuente de verdad. OpenRouteService calcula la geometría completa, Leaflet la representa íntegramente, y Google/Waze se usan únicamente como clientes de navegación. Google Maps no conoce las restricciones de tu vehículo y puede adaptar ligeramente el recorrido por tráfico; los waypoints en los cruces clave minimizan esa deriva. Ver [ADR 001](docs/adr/001-motor-planificacion-vs-navegacion.md).
+
+## 📐 Decisiones de arquitectura (ADRs)
+
+Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
+
+| ADR | Decisión |
+|---|---|
+| [001](docs/adr/001-motor-planificacion-vs-navegacion.md) | Separación entre motor de planificación (ORS + Leaflet) y motor de navegación (Google/Waze como clientes) |
 
 ## 📚 Próximos pasos
 

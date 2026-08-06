@@ -6,8 +6,8 @@ Aplicación PWA para cálculo de rutas de vehículos grandes (autobuses, camione
 
 Kavana BusRoad ayuda a transportistas y conductores de vehículos de gran tamaño a planificar rutas seguras según las dimensiones reales de su vehículo. A diferencia de Google Maps (que calcula rutas de coche), BusRoad aplica las restricciones del vehículo en cada tramo y muestra la comparación con la ruta convencional.
 
-- **Frontend**: Vue 3 + Vite (PWA) desplegado en Vercel
-- **Backend**: FastAPI (Python) desplegado en Kubernetes (k3s) en el VPS
+- **Frontend**: Vue 3 + Vite (PWA) desplegado en Vercel (`busroad.kavanasystems.com`)
+- **Backend**: FastAPI (Python) desplegado en Fly.io (`busroad-api.kavanasystems.com`)
 - **Motor de rutas**: [OpenRouteService](https://openrouteservice.org/) con perfil `driving-hgv` (vehículos pesados): aplica restricciones reales de altura, anchura, largo y peso en Europa usando datos de OpenStreetMap. Google Routes queda como respaldo de ruta estándar (NO aplica dimensiones fuera de EE.UU.).
 - **Navegación**: los botones de Google Maps/Waze usan waypoints extraídos del polyline de la ruta segura, forzando al navegador a seguir el itinerario calculado.
 
@@ -17,10 +17,10 @@ Kavana BusRoad ayuda a transportistas y conductores de vehículos de gran tamañ
 |------|-------------|
 | Frontend | Vue 3, Vite, TypeScript |
 | Backend | FastAPI, Uvicorn, Pydantic, httpx |
-| Infra | Docker, Kubernetes (k3s), nginx, Let's Encrypt |
-| Despliegue | Vercel (frontend), k3s VPS + nginx (backend) |
+| Infra | Docker, Fly.io (machines), Let's Encrypt |
+| Despliegue | Vercel (frontend), Fly.io (backend) |
 | API externa | OpenRouteService (`driving-hgv`, geocoding) · Google Routes (fallback) |
-| DNS | Namecheap (subdominio `busroad-api.kavanasystems.com`) |
+| DNS | Namecheap (A + AAAA `busroad-api` → Fly.io, `_acme-challenge` CNAME) |
 
 ## 📁 Estructura del proyecto
 
@@ -106,30 +106,40 @@ docker build -t kavana-busroad-backend:0.1.0 .
 docker run -p 8000:8000 --env-file .env kavana-busroad-backend
 ```
 
-## ☸️ Despliegue en Kubernetes (k3s)
+## 🚀 Despliegue en Fly.io
 
-El backend corre en un clúster k3s en el VPS. Documentación completa en `k8s/README.md`.
-
-Resumen:
+El backend corre en **Fly.io** (machines). Configuración en `backend/fly.toml` (región `cdg`, auto-stop cuando está en reposo para coste cero).
 
 ```bash
-# 1. Construir imagen y cargarla en k3s (sin registro externo)
-docker build -t kavana-busroad-backend:0.1.0 backend/
-docker save kavana-busroad-backend:0.1.0 | k3s ctr images import -
+cd backend
 
-# 2. Secret con las claves de API
-kubectl create secret generic busroad-secrets \
-  --from-literal=ors_api_key=TU_CLAVE_ORS \
-  --from-literal=google_api_key=TU_CLAVE_GOOGLE
+# 1. Login (token de organización si hay SSO)
+flyctl auth login
 
-# 3. Deployment + Service (NodePort 30080)
-kubectl apply -f k8s/backend.yaml
+# 2. Crear la app (una vez)
+flyctl apps create busroad-api
 
-# 4. nginx del VPS proxea busroad-api.kavanasystems.com → 127.0.0.1:30080
-#    con certificado Let's Encrypt (renovación automática vía certbot.timer)
+# 3. Secrets con las claves de API
+flyctl secrets set --app busroad-api \
+  ORS_API_KEY=TU_CLAVE_ORS \
+  GOOGLE_API_KEY=TU_CLAVE_GOOGLE
+
+# 4. Desplegar (build remoto)
+flyctl deploy --app busroad-api --remote-only
+
+# 5. Certificado para el dominio custom (una vez, tras crear A/AAAA en Namecheap)
+flyctl certs add busroad-api.kavanasystems.com
 ```
 
-> **Pitfall conocido**: el LoadBalancer de Traefik (viene con k3s) captura los puertos 80/443 del host con reglas nftables antes que nginx. Si el tráfico no llega a nginx, convertir el Service de Traefik a ClusterIP (ver `k8s/README.md`).
+DNS en Namecheap para `busroad-api.kavanasystems.com`:
+
+| Tipo | Host | Valor |
+|---|---|---|
+| A | busroad-api | IP de la app (`flyctl ips list`) |
+| AAAA | busroad-api | IPv6 de la app (`flyctl ips list`) |
+| CNAME | _acme-challenge.busroad-api | `busroad-api.kavanasystems.com.<app>.<hash>.flydns.net` (lo indica `flyctl certs setup`) |
+
+> **Histórico**: el backend estuvo inicialmente en Kubernetes (k3s) en el VPS de laboratorio. Se migró a Fly.io para que ningún proyecto dependa del VPS (laboratorio de trabajo, no producción). El manifiesto k8s quedó en `k8s/` como referencia del experimento.
 
 ## 🧪 Health Check
 
@@ -194,10 +204,11 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 | [002](docs/adr/002-preservacion-geometria-ors-cliente.md) | Preservación de la geometría completa de ORS en el cliente (Leaflet la representa íntegramente) |
 | [003](docs/adr/003-seleccion-waypoints-cambios-direccion.md) | Selección de waypoints basada en cambios de dirección > 12° (no muestreo uniforme) |
 | [004](docs/adr/004-comparacion-ruta-estandar-vs-hgv.md) | Comparación simultánea de ruta estándar y ruta HGV como decisión de UX + técnica |
+| [005](docs/adr/005-backend-flyio-independiente-vps.md) | Backend en Fly.io: servicio independiente del VPS de laboratorio |
 
 ## 📚 Próximos pasos
 
-- [ ] **Migrar backend de k3s (VPS) a Fly.io** (decisión 2026-08-05): el VPS es el laboratorio de trabajo, no producción. Backend en servicio independiente como el resto del portfolio. Incluye: desplegar Dockerfile en Fly.io, mover claves a secrets de Fly, actualizar `VITE_API_URL` del frontend, actualizar ADR 001 y landing.
+- [x] **Migrar backend de k3s (VPS) a Fly.io** (hecho 2026-08-05): ADR 005, DNS actualizado, certificado emitido. Pendiente: limpiar pod k3s + vhost nginx del VPS.
 - [ ] APK para el hermano (Capacitor + Android Studio) con ajustes: vehículo precargado, tema, quitar comparación
 - [ ] Dominio propio para el frontend (`busroad.kavanasystems.com`, CNAME pendiente en Namecheap)
 - [ ] Pruebas unitarias e integración (pytest) del backend

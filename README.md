@@ -165,17 +165,21 @@ Endpoints principales:
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | GET | `/api/v1/health` | Estado y motor activo |
-| POST | `/api/v1/ruta` | Calcula ruta segura + convencional dado origen, destino y dimensiones del vehículo |
+| POST | `/api/v1/ruta` | Calcula ruta segura + convencional dado origen, destino, paradas opcionales (`paradas[]`, hasta 20), optimización de orden (`optimizar`) y dimensiones del vehículo |
 
 Payload de ejemplo:
 
 ```json
 {
   "origen": "Estació del Nord, Valencia",
-  "destino": "C. de Ing. Tamarit, 9, 46170 Villar del Arzobispo, Valencia",
+  "destino": "IES Cheste, Valencia",
+  "paradas": ["CEIP Cervantes, Cheste, Valencia", "CEIP La Paz, Cheste, Valencia"],
+  "optimizar": false,
   "vehiculo": { "alto_m": 3.5, "ancho_m": 2.5, "largo_m": 12.0, "peso_kg": 12000 }
 }
 ```
+
+`optimizar: true` reordena las paradas al recorrido más corto (VROOM, ver ADR 006).
 
 Respuesta: distancia, duración, polyline, pasos en español, y la ruta convencional (coche) para comparar.
 
@@ -205,6 +209,7 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 | [003](docs/adr/003-seleccion-waypoints-cambios-direccion.md) | Selección de waypoints basada en cambios de dirección > 12° (no muestreo uniforme) |
 | [004](docs/adr/004-comparacion-ruta-estandar-vs-hgv.md) | Comparación simultánea de ruta estándar y ruta HGV como decisión de UX + técnica |
 | [005](docs/adr/005-backend-flyio-independiente-vps.md) | Backend en Fly.io: servicio independiente del VPS de laboratorio |
+| [006](docs/adr/006-paradas-intermedias-optimizacion-vroom.md) | Paradas intermedias + optimización de orden con VROOM (rutas escolares) |
 
 ## 📚 Próximos pasos
 

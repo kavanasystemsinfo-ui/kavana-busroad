@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/v1", tags=["ruta"])
 
 ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-hgv"
 ORS_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
+ORS_OPTIMIZATION_URL = "https://api.openrouteservice.org/optimization"
 GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
 
@@ -34,6 +35,8 @@ class Dimensiones(BaseModel):
 class RutaRequest(BaseModel):
     origen: str = Field(min_length=2, max_length=200)
     destino: str = Field(min_length=2, max_length=200)
+    paradas: list[str] = Field(default_factory=list, max_length=20, description="Paradas intermedias en orden (o sin orden si optimizar=true)")
+    optimizar: bool = Field(False, description="Si true, ORS optimiza el orden de las paradas (problema del viajante)")
     vehiculo: Dimensiones = Dimensiones()
 
 
@@ -86,12 +89,15 @@ async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
 
 
 async def _pedir_ruta_ors(
-    api_key: str, o: list, d: list, perfil: str, restricciones: dict | None
+    api_key: str, coords: list, perfil: str, restricciones: dict | None
 ) -> dict:
-    """Pide una ruta a ORS y devuelve {distancia_km, duracion_min, polyline, pasos}."""
+    """Pide una ruta a ORS y devuelve {distancia_km, duracion_min, polyline, pasos}.
+
+    coords: lista de [lng, lat] con 2 o más puntos (origen, paradas..., destino).
+    """
     payload = {
-        "coordinates": [o, d],
-        "radiuses": [1500, 1500],
+        "coordinates": coords,
+        "radiuses": [1500] * len(coords),
         "language": "es",
     }
     if restricciones:
@@ -116,12 +122,63 @@ async def _pedir_ruta_ors(
         "distancia_km": round(summary.get("distance", 0) / 1000, 1),
         "duracion_min": round(summary.get("duration", 0) / 60, 1),
         "polyline": route.get("geometry", ""),
-        "pasos": pasos[:15],
+        "pasos": pasos[:25],
+        "paradas_resueltas": route.get("way_points", []),
     }
+
+
+async def _optimizar_paradas_ors(api_key: str, coords: list) -> list:
+    """Devuelve las coordenadas reordenadas según la ruta óptima (VROOM).
+
+    El endpoint /optimization resuelve el problema del viajante: recibe el
+    origen, las paradas y el destino, y devuelve el orden óptimo de visita.
+    Aquí reordenamos las coordenadas intermedias según ese orden.
+    """
+    if len(coords) <= 3:
+        return coords  # sin paradas (o una sola) no hay nada que optimizar
+    origen = coords[0]
+    destino = coords[-1]
+    paradas = coords[1:-1]
+    payload = {
+        "vehicles": [{
+            "id": 0,
+            "profile": "driving-hgv",
+            "start": origen,
+            "end": destino,
+        }],
+        "jobs": [
+            {"id": i, "location": p} for i, p in enumerate(paradas)
+        ],
+    }
+    async with httpx.AsyncClient(timeout=40) as client:
+        r = await client.post(
+            ORS_OPTIMIZATION_URL,
+            json=payload,
+            headers={"Authorization": api_key, "Content-Type": "application/json"},
+        )
+    if r.status_code != 200:
+        raise ValueError(f"Optimización ORS respondió {r.status_code}: {r.text[:120]}")
+    data = r.json()
+    routes = data.get("routes", [])
+    if not routes:
+        return coords
+    # Reordenar paradas según los steps (start → job N → ... → end)
+    orden: list[int] = []
+    for step in routes[0].get("steps", []):
+        job = step.get("job")
+        if job is not None:
+            orden.append(job)
+    if not orden:
+        return coords
+    reordenadas = [origen] + [paradas[j] for j in orden] + [destino]
+    return reordenadas
 
 
 async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     """Ruta con restricciones reales de dimensiones (perfil driving-hgv).
+
+    Soporta paradas intermedias: geocodifica origen + paradas + destino y
+    pasa todos los puntos a ORS en orden (o con optimización si req.optimizar).
 
     También calcula la ruta convencional (driving-car, sin restricciones)
     con las mismas coordenadas, para que el usuario compare la diferencia.
@@ -131,6 +188,14 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     if not origenes or not destinos:
         raise ValueError("No pude localizar origen o destino. Prueba con nombres más exactos.")
 
+    # Geocodificar paradas intermedias (cada una con sus candidatos)
+    paradas_candidatas: list[list] = []
+    for p in req.paradas:
+        cands = await _geocodificar_ors(api_key, p)
+        if not cands:
+            raise ValueError(f"No pude localizar la parada: {p}")
+        paradas_candidatas.append(cands)
+
     v = req.vehiculo
     restricciones = {
         "height": v.alto_m,
@@ -138,17 +203,29 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
         "length": v.largo_m,
         "weight": float(v.peso_kg),
     }
-    ultimo_error = "Sin ruta enrutable entre origen y destino."
+    ultimo_error = "Sin ruta enrutable entre los puntos indicados."
     for o in origenes[:2]:
         for d in destinos[:2]:
+            # Combinar cada parada con su primer candidato (más probable)
+            coords = [o] + [pc[0] for pc in paradas_candidatas] + [d]
+            # Si se pide optimización, reordenar las paradas con VROOM
+            if req.optimizar:
+                try:
+                    coords = await _optimizar_paradas_ors(api_key, coords)
+                except ValueError:
+                    pass  # si falla la optimización, usar el orden dado
             try:
-                segura = await _pedir_ruta_ors(api_key, o, d, "driving-hgv", restricciones)
+                segura = await _pedir_ruta_ors(
+                    api_key, coords, "driving-hgv", restricciones
+                )
             except ValueError as e:
                 ultimo_error = str(e)
                 continue
             # Ruta convencional (coche) con las mismas coordenadas
             try:
-                convencional = await _pedir_ruta_ors(api_key, o, d, "driving-car", None)
+                convencional = await _pedir_ruta_ors(
+                    api_key, coords, "driving-car", None
+                )
             except ValueError:
                 convencional = None
             return RutaResponse(

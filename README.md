@@ -6,10 +6,11 @@ Aplicación PWA para cálculo de rutas de vehículos grandes (autobuses, camione
 
 Kavana BusRoad ayuda a transportistas y conductores de vehículos de gran tamaño a planificar rutas seguras según las dimensiones reales de su vehículo. A diferencia de Google Maps (que calcula rutas de coche), BusRoad aplica las restricciones del vehículo en cada tramo y muestra la comparación con la ruta convencional.
 
-- **Frontend**: Vue 3 + Vite (PWA) desplegado en Vercel (`busroad.kavanasystems.com`)
+- **Frontend**: Vue 3 + Vite (**PWA instalable**, offline) desplegado en Vercel (`busroad.kavanasystems.com`)
 - **Backend**: FastAPI (Python) desplegado en Fly.io (`busroad-api.kavanasystems.com`)
 - **Motor de rutas**: [OpenRouteService](https://openrouteservice.org/) con perfil `driving-hgv` (vehículos pesados): aplica restricciones reales de altura, anchura, largo y peso en Europa usando datos de OpenStreetMap. Google Routes queda como respaldo de ruta estándar (NO aplica dimensiones fuera de EE.UU.).
 - **Navegación**: los botones de Google Maps/Waze usan waypoints extraídos del polyline de la ruta segura, forzando al navegador a seguir el itinerario calculado.
+- **Paradas intermedias**: hasta 20 paradas entre origen y destino (rutas escolares), con optimización opcional del orden (VROOM).
 
 ## 🛠️ Stack Tecnológico
 
@@ -33,8 +34,13 @@ kavana-busroad/
 │   ├── Dockerfile      # Imagen python:3.12-slim
 │   ├── .env.example
 │   └── requirements.txt
-├── frontend/           # PWA Vue 3 + Vite
-│   ├── src/App.vue     # Formulario + comparativa de rutas + botones de navegación
+├── frontend/           # PWA Vue 3 + Vite (instalable, offline)
+│   ├── src/App.vue     # Pestañas: Ruta (origen, destino, paradas), Vehículo, Favoritos, Configuración
+│   ├── src/components/RouteMap.vue  # Mapa Leaflet con la geometría de ORS
+│   ├── public/
+│   │   ├── manifest.webmanifest     # Manifest PWA (iconos 192/512, theme #a78bfa)
+│   │   ├── sw.js                    # Service worker (app shell offline)
+│   │   └── icon-*.png / favicon.png / apple-touch-icon.png
 │   ├── .env.example    # VITE_API_URL
 │   └── package.json
 ├── k8s/
@@ -198,6 +204,27 @@ Respuesta: distancia, duración, polyline, pasos en español, y la ruta convenci
 
 > **Arquitectura**: BusRoad es la fuente de verdad. OpenRouteService calcula la geometría completa, Leaflet la representa íntegramente, y Google/Waze se usan únicamente como clientes de navegación. Google Maps no conoce las restricciones de tu vehículo y puede adaptar ligeramente el recorrido por tráfico; los waypoints en los cruces clave minimizan esa deriva. Ver [ADR 001](docs/adr/001-motor-planificacion-vs-navegacion.md).
 
+## 🛑 Paradas intermedias (rutas escolares y repartos)
+
+Pensado para el caso real de rutas de colegios (recogida de niños en N paradas hasta el colegio) y repartos multi-punto:
+
+1. Pulsa **"➕ Añadir parada"** debajo del destino (hasta 20 paradas).
+2. Cada parada acepta una dirección completa (igual que origen/destino) y se puede reordenar con **↑ ↓** o eliminar con **✕**.
+3. Con 2+ paradas aparece el checkbox **"Optimizar orden"**: si está activo, el backend reordena las paradas al recorrido más corto (problema del viajante resuelto con el endpoint `/optimization` de ORS, VROOM). Verificado en producción: orden malo 132,1 km → optimizado 90,9 km (**41 km y 37 min de ahorro**).
+4. El mapa Leaflet dibuja la ruta completa pasando por todas las paradas, y la navegación (Google/Waze) se genera sobre ese polyline final.
+
+Detalle en [ADR 006](docs/adr/006-paradas-intermedias-optimizacion-vroom.md).
+
+## 📱 Instalación como PWA
+
+La app es una PWA instalable: funciona offline (app shell cacheado por service worker), con icono propio y a pantalla completa.
+
+- **Android/Chrome**: abre `https://busroad.kavanasystems.com` → menú ⋮ → "Instalar aplicación".
+- **iPhone/Safari**: abre la app → Compartir → "Añadir a pantalla de inicio".
+- **PC/Chrome**: icono de instalación en la barra de direcciones.
+
+La API y los tiles del mapa se mantienen en vivo (no se cachean): el offline cubre abrir la app y la interfaz, el cálculo de rutas requiere conexión.
+
 ## 📐 Decisiones de arquitectura (ADRs)
 
 Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
@@ -214,8 +241,10 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 ## 📚 Próximos pasos
 
 - [x] **Migrar backend de k3s (VPS) a Fly.io** (hecho 2026-08-05): ADR 005, DNS actualizado, certificado emitido. Pendiente: limpiar pod k3s + vhost nginx del VPS.
+- [x] **Dominio propio para el frontend** (hecho 2026-08-05): `busroad.kavanasystems.com` con HTTPS en Vercel.
+- [x] **PWA instalable** (hecho 2026-08-06): manifest + service worker + iconos propios.
+- [x] **Paradas intermedias + optimización VROOM** (hecho 2026-08-06): ADR 006.
 - [ ] APK para el hermano (Capacitor + Android Studio) con ajustes: vehículo precargado, tema, quitar comparación
-- [ ] Dominio propio para el frontend (`busroad.kavanasystems.com`, CNAME pendiente en Namecheap)
 - [ ] Pruebas unitarias e integración (pytest) del backend
 - [ ] CI/CD con GitHub Actions
 - [ ] Internacionalización (i18n)

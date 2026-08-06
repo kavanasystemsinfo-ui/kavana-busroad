@@ -14,6 +14,8 @@ const tabs = [
 // ---------- Estado de ruta ----------
 const origen = ref('')
 const destino = ref('')
+const paradas = ref<string[]>([])
+const optimizar = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const result = ref<any | null>(null)
@@ -302,6 +304,10 @@ const calcularRuta = async () => {
     error.value = 'Escribe un origen y un destino para calcular la ruta.'
     return
   }
+  const paradasLimpias = paradas.value.map(p => p.trim()).filter(Boolean)
+  if (paradasLimpias.length === 0 && paradas.value.length > 0) {
+    paradas.value = []
+  }
   loading.value = true
   error.value = null
   result.value = null
@@ -312,6 +318,8 @@ const calcularRuta = async () => {
       body: JSON.stringify({
         origen: origen.value,
         destino: destino.value,
+        paradas: paradasLimpias,
+        optimizar: optimizar.value,
         vehiculo: dimensiones.value
       })
     })
@@ -327,6 +335,23 @@ const calcularRuta = async () => {
   } finally {
     loading.value = false
   }
+}
+
+// ---------- Gestión de paradas ----------
+const anadirParada = () => {
+  paradas.value.push('')
+}
+
+const eliminarParada = (index: number) => {
+  paradas.value.splice(index, 1)
+}
+
+const moverParada = (index: number, delta: number) => {
+  const nuevo = index + delta
+  if (nuevo < 0 || nuevo >= paradas.value.length) return
+  const tmp = paradas.value[index]
+  paradas.value[index] = paradas.value[nuevo]
+  paradas.value[nuevo] = tmp
 }
 </script>
 
@@ -363,6 +388,31 @@ const calcularRuta = async () => {
               <label>Destino</label>
               <input v-model="destino" type="text" placeholder="Ej: Higueruelas, Valencia" @keyup.enter="calcularRuta" />
             </div>
+          </div>
+
+          <!-- Paradas intermedias -->
+          <div v-for="(_, index) in paradas" :key="index" class="search-row parada-row">
+            <div class="search-icon-col">
+              <span class="search-icon parada">{{ index + 1 }}</span>
+              <div class="search-line"></div>
+            </div>
+            <div class="search-field">
+              <label>Parada {{ index + 1 }}</label>
+              <input v-model="paradas[index]" type="text" placeholder="Ej: CEIP Cervantes, Cheste" @keyup.enter="calcularRuta" />
+            </div>
+            <div class="parada-actions">
+              <button class="parada-btn" title="Subir" :disabled="index === 0" @click="moverParada(index, -1)">↑</button>
+              <button class="parada-btn" title="Bajar" :disabled="index === paradas.length - 1" @click="moverParada(index, 1)">↓</button>
+              <button class="parada-btn danger" title="Eliminar" @click="eliminarParada(index)">✕</button>
+            </div>
+          </div>
+
+          <div class="parada-add-row">
+            <button class="parada-add-btn" @click="anadirParada">➕ Añadir parada</button>
+            <label class="optimizar-toggle" v-if="paradas.length >= 2">
+              <input v-model="optimizar" type="checkbox" />
+              <span>Optimizar orden</span>
+            </label>
           </div>
         </div>
 
@@ -861,6 +911,85 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 .search-field input:focus { outline: none; }
 
 .search-field input::placeholder { color: #4b5563; }
+
+/* Paradas intermedias */
+.search-icon.parada {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--tema-primary);
+  color: #0f1117;
+  font-size: 0.7em;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.parada-row .search-field { padding-bottom: 8px; }
+
+.parada-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 18px;
+  flex-shrink: 0;
+}
+
+.parada-btn {
+  width: 28px;
+  height: 24px;
+  background: #222a3d;
+  border: 1px solid #2a2e3a;
+  border-radius: 6px;
+  color: #9ca3af;
+  font-size: 0.75em;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.parada-btn:hover:not(:disabled) { border-color: var(--tema-primary); color: var(--tema-primary); }
+
+.parada-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.parada-btn.danger:hover { border-color: #f87171; color: #f87171; }
+
+.parada-add-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px dashed #2a2e3a;
+  margin-top: 4px;
+}
+
+.parada-add-btn {
+  background: transparent;
+  border: 1px dashed #3a3f52;
+  border-radius: 8px;
+  color: var(--tema-primary);
+  font-size: 0.8em;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.parada-add-btn:hover { border-color: var(--tema-primary); background: var(--tema-glow); }
+
+.optimizar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78em;
+  color: #9ca3af;
+  cursor: pointer;
+  user-select: none;
+}
+
+.optimizar-toggle input { width: auto; accent-color: var(--tema-primary); }
 
 /* Perfil de vehículo */
 .vehicle-profile {

@@ -8,8 +8,12 @@ vehículo. Sin clave configurada, responde con una ruta de ejemplo (mock)
 para poder desarrollar sin coste.
 """
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from .motor import router as motor_router
 
@@ -25,6 +29,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "https://busroad.kavanasystems.com",
+        "https://www.kavanasystems.com",
         "https://kavana-busroad.vercel.app",
         "https://frontend-605yf47nv-vistaprods-projects.vercel.app",
     ],
@@ -34,6 +39,51 @@ app.add_middleware(
 )
 
 app.include_router(motor_router)
+
+
+# ---------------------------------------------------------------- asistente
+# Asistente técnico RAG (público, sin auth): un reclutador pregunta cómo
+# funciona el proyecto y el bot responde solo con la documentación real.
+class AskRequest(BaseModel):
+    question: str = Field(min_length=4, max_length=500)
+
+
+@app.post("/api/v1/assistant/ask-tech")
+async def ask_tech(req: AskRequest, request: Request):
+    from .assistant import enforce_rate_limit, responder
+
+    ip = request.client.host if request.client else "unknown"
+    try:
+        enforce_rate_limit(ip)
+    except Exception as e:
+        return JSONResponse(status_code=429, content={"error": str(e)})
+
+    import os
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Asistente no configurado (falta OPENROUTER_API_KEY en el servidor)"},
+        )
+
+    try:
+        result = await responder(api_key, req.question.strip())
+        return {"success": True, **result}
+    except Exception as e:
+        logger = logging.getLogger("busroad.assistant")
+        logger.error("Asistente: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "El asistente falló al responder. Inténtalo de nuevo en un momento."},
+        )
+
+
+@app.get("/api/v1/assistant/stats")
+def assistant_stats():
+    from .assistant import estadisticas_corpus
+
+    return estadisticas_corpus()
 
 
 @app.get("/api/v1/health")

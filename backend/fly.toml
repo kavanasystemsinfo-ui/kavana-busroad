@@ -3,7 +3,8 @@ app = "busroad-api"
 primary_region = "cdg"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "backend/Dockerfile"
+  context = ".."
 
 [env]
   PYTHONUNBUFFERED = "1"

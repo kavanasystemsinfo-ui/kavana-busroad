@@ -1,27 +1,19 @@
 # Dockerfile for Kavana BusRoad backend (FastAPI)
-# Use official Python slim image
+# Build context = raíz del repo (backend/Dockerfile)
 FROM python:3.12-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies (if any) - currently none needed beyond pip
-# Install Python dependencies
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY app ./app
-# Corpus del asistente RAG (README, docs/adr)
+# Código + corpus (README, docs) para el RAG
+COPY backend/app ./app
 COPY README.md ./README.md
 COPY docs ./docs
 
-# Expose port (default 8000, can be overridden by PORT env var)
-EXPOSE 8000
-
-# Environment variable for Python to avoid buffering
 ENV PYTHONUNBUFFERED=1
 
-# Run the application
-# Use uvicorn with host 0.0.0.0 and port from env PORT (default 8000)
+EXPOSE 8000
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

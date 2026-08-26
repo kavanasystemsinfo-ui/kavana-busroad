@@ -4,7 +4,6 @@ primary_region = "cdg"
 
 [build]
   dockerfile = "backend/Dockerfile"
-  context = ".."
 
 [env]
   PYTHONUNBUFFERED = "1"

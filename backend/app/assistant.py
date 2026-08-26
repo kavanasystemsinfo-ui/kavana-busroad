@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 # Local: raíz del repo. Producción: /docs (Dockerfile puede copiarlo allí).
 REPO_ROOT = Path(os.getenv("BUSROAD_DOCS_ROOT") or Path(__file__).resolve().parents[2])
 
-MODELO_FREE = os.getenv("ASSISTANT_MODEL_FREE", "poolside/laguna-s-2.1:free")
-MODELO_PRO = os.getenv("ASSISTANT_MODEL_PRO", "poolside/laguna-s-2.1:free")
+MODELO_FREE = os.getenv("ASSISTANT_MODEL_FREE", "nvidia/nemotron-3-super-120b-a12b:free")
+MODELO_PRO = os.getenv("ASSISTANT_MODEL_PRO", "nvidia/nemotron-3-super-120b-a12b:free")
 
 # Protección del asistente público (mismo criterio que steelworks 2026-08-25)
 MAX_PREGUNTAS_VENTANA = 15

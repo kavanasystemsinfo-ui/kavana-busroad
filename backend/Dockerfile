@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY app ./app
+# Corpus del asistente RAG (README, docs/adr)
+COPY README.md ./README.md
+COPY docs ./docs
 
 # Expose port (default 8000, can be overridden by PORT env var)
 EXPOSE 8000

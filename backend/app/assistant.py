@@ -12,6 +12,7 @@ import math
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -98,6 +99,13 @@ def cargar_corpus() -> list[dict]:
     return chunks
 
 
+def _leer_contexto_base() -> str:
+    abs_path = REPO_ROOT / "README.md"
+    if not abs_path.exists():
+        return ""
+    return abs_path.read_text(encoding="utf-8", errors="replace")[:8000]
+
+
 # ---------------------------------------------------------------- TF-IDF
 
 _STOPWORDS = set(
@@ -110,9 +118,12 @@ _STOPWORDS = set(
 
 
 def tokenizar(texto: str) -> list[str]:
+    texto = texto.lower()
+    texto = unicodedata.normalize("NFD", texto)
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")  # quitar tildes
     return [
         w
-        for w in re.sub(r"[^a-záéíóúñü0-9]", " ", texto.lower()).split()
+        for w in re.sub(r"[^a-z0-9]", " ", texto).split()
         if len(w) > 2 and w not in _STOPWORDS
     ]
 
@@ -156,10 +167,14 @@ def buscar(indice: dict, pregunta: str, top: int = 6) -> list[dict]:
 # ---------------------------------------------------------------- LLM
 
 
+# Base URL del proveedor (OpenRouter por defecto; DeepSeek: https://api.deepseek.com/v1)
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+
 async def llamar_openrouter(api_key: str, model: str, system_prompt: str, user_prompt: str) -> str:
     async with httpx.AsyncClient(timeout=45) as client:
         res = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            f"{LLM_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "HTTP-Referer": "https://busroad.kavanasystems.com",
@@ -201,8 +216,9 @@ async def responder(api_key: str, pregunta: str) -> dict:
 
     indice = get_indice()
     docs = buscar(indice, pregunta)
+    contexto_base = _leer_contexto_base()
 
-    if not docs or docs[0]["score"] < 0.02:
+    if not contexto_base and not docs:
         return {
             "respuesta": "Eso no aparece en la documentación del proyecto. Si quieres, "
             "pregúntaselo directamente a Jorge, el creador de KAVANA BusRoad.",
@@ -210,16 +226,22 @@ async def responder(api_key: str, pregunta: str) -> dict:
             "modelo": None,
         }
 
-    contexto = "\n\n---\n\n".join(
-        f"[FUENTE: {d['fuente']} — {d['titulo']}]\n{d['texto']}" for d in docs
-    )
+    partes = []
+    if contexto_base:
+        partes.append(f"[FUENTE: README.md — Visión general del proyecto]\n{contexto_base}")
+    for d in docs:
+        if d["fuente"] == "README.md":
+            continue
+        partes.append(f"[FUENTE: {d['fuente']} — {d['titulo']}]\n{d['texto']}")
+    contexto = "\n\n---\n\n".join(partes)
 
     system_prompt = "\n".join(
         [
             *_PERSONA_TECH,
             "Respondes EXCLUSIVAMENTE con la documentación real del proyecto en el contexto.",
             "Reglas:",
-            "- Responde en español, claro y directo.",
+            "- Responde en español, claro y directo. Máximo 120 palabras.",
+            "- NO muestres tu razonamiento ni pienses en voz alta. Ve directo a la respuesta.",
             "- Si el contexto contiene la respuesta, explícala apoyándote en sus datos.",
             '- Si NO la contiene, di literalmente: "Eso no está en la documentación '
             'del proyecto." y nada más.',
@@ -235,9 +257,12 @@ async def responder(api_key: str, pregunta: str) -> dict:
     except RuntimeError:
         respuesta = await llamar_openrouter(api_key, MODELO_PRO, system_prompt, user_prompt)
 
+    fuentes = sorted({d["fuente"] for d in docs})
+    if contexto_base:
+        fuentes = sorted(set(fuentes) | {"README.md"})
     return {
         "respuesta": respuesta,
-        "fuentes": sorted({d["fuente"] for d in docs}),
+        "fuentes": fuentes,
         "modelo": model,
     }
 

@@ -60,7 +60,7 @@ async def ask_tech(req: AskRequest, request: Request):
 
     import os
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         return JSONResponse(
             status_code=500,

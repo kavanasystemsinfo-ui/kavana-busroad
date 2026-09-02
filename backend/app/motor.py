@@ -370,6 +370,11 @@ async def calcular_ruta(req: RutaRequest):
         try:
             return await _calcular_ors(ors_key, req)
         except ValueError as e:
+            # Log del body para diagnosticar fallos reales de geocodificación
+            print(
+                f"[DIAG] 422 ruta fallida | origen={req.origen!r} destino={req.destino!r} "
+                f"paradas={req.paradas!r} optimizar={req.optimizar} | {e}"
+            )
             # Sin claves no hay nada que devolver; con claves, el error es real
             raise HTTPException(status_code=422, detail=str(e))
 

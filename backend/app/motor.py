@@ -56,6 +56,7 @@ class RutaConvencional(BaseModel):
 class RutaResponse(BaseModel):
     origen: str
     destino: str
+    paradas: list[str] = []  # paradas en el orden REAL usado (tras optimización si aplica)
     distancia_km: float
     duracion_min: float
     polyline: str
@@ -127,15 +128,17 @@ async def _pedir_ruta_ors(
     }
 
 
-async def _optimizar_paradas_ors(api_key: str, coords: list) -> list:
-    """Devuelve las coordenadas reordenadas según la ruta óptima (VROOM).
+async def _optimizar_paradas_ors(api_key: str, coords: list) -> tuple[list, list[int]]:
+    """Devuelve (coordenadas reordenadas, orden de paradas) según la ruta óptima (VROOM).
 
     El endpoint /optimization resuelve el problema del viajante: recibe el
     origen, las paradas y el destino, y devuelve el orden óptimo de visita.
-    Aquí reordenamos las coordenadas intermedias según ese orden.
+    Aquí reordenamos las coordenadas intermedias según ese orden y devolvemos
+    el orden (índices sobre las paradas originales) para que la respuesta
+    pueda reflejar las paradas en el orden en que realmente se recorren.
     """
     if len(coords) <= 3:
-        return coords  # sin paradas (o una sola) no hay nada que optimizar
+        return coords, list(range(len(coords) - 2))  # sin paradas (o una sola) no hay nada que optimizar
     origen = coords[0]
     destino = coords[-1]
     paradas = coords[1:-1]
@@ -161,7 +164,7 @@ async def _optimizar_paradas_ors(api_key: str, coords: list) -> list:
     data = r.json()
     routes = data.get("routes", [])
     if not routes:
-        return coords
+        return coords, list(range(len(coords) - 2))
     # Reordenar paradas según los steps (start → job N → ... → end)
     orden: list[int] = []
     for step in routes[0].get("steps", []):
@@ -169,9 +172,9 @@ async def _optimizar_paradas_ors(api_key: str, coords: list) -> list:
         if job is not None:
             orden.append(job)
     if not orden:
-        return coords
+        return coords, list(range(len(coords) - 2))
     reordenadas = [origen] + [paradas[j] for j in orden] + [destino]
-    return reordenadas
+    return reordenadas, orden
 
 
 async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
@@ -208,10 +211,12 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
         for d in destinos[:2]:
             # Combinar cada parada con su primer candidato (más probable)
             coords = [o] + [pc[0] for pc in paradas_candidatas] + [d]
+            # Orden de paradas: por defecto el tecleado por el usuario
+            orden_paradas = list(range(len(req.paradas)))
             # Si se pide optimización, reordenar las paradas con VROOM
             if req.optimizar:
                 try:
-                    coords = await _optimizar_paradas_ors(api_key, coords)
+                    coords, orden_paradas = await _optimizar_paradas_ors(api_key, coords)
                 except ValueError:
                     pass  # si falla la optimización, usar el orden dado
             try:
@@ -231,6 +236,7 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
             return RutaResponse(
                 origen=req.origen,
                 destino=req.destino,
+                paradas=[req.paradas[i] for i in orden_paradas],
                 distancia_km=segura["distancia_km"],
                 duracion_min=segura["duracion_min"],
                 polyline=segura["polyline"],
@@ -281,6 +287,7 @@ async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
     return RutaResponse(
         origen=req.origen,
         destino=req.destino,
+        paradas=req.paradas,
         distancia_km=round(route.get("distanceMeters", 0) / 1000, 1),
         duracion_min=round(int(route.get("duration", "0s").rstrip("s")) / 60, 1),
         polyline=route.get("polyline", {}).get("encodedPolyline", ""),
@@ -294,6 +301,7 @@ def _mock(req: RutaRequest) -> RutaResponse:
     return RutaResponse(
         origen=req.origen,
         destino=req.destino,
+        paradas=req.paradas,
         distancia_km=42.5,
         duracion_min=38.0,
         polyline="mock",

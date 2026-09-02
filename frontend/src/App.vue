@@ -2,6 +2,33 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import RouteMap from './components/RouteMap.vue'
 
+// ---------- Tipos de la API ----------
+interface PuntoRiesgo {
+  nombre: string
+  tipo: string
+  descripcion: string
+}
+
+interface RutaConvencional {
+  distancia_km: number
+  duracion_min: number
+  polyline: string
+  pasos: string[]
+}
+
+interface RutaResponse {
+  origen: string
+  destino: string
+  paradas: string[]
+  distancia_km: number
+  duracion_min: number
+  polyline: string
+  pasos: string[]
+  riesgos: PuntoRiesgo[]
+  motor: string
+  convencional: RutaConvencional | null
+}
+
 // ---------- Estado de pestañas ----------
 const activeTab = ref<'ruta' | 'vehiculo' | 'favoritos' | 'config'>('ruta')
 const tabs = [
@@ -18,7 +45,7 @@ const paradas = ref<string[]>([])
 const optimizar = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
-const result = ref<any | null>(null)
+const result = ref<RutaResponse | null>(null)
 
 const dimensiones = ref({
   largo_m: 12.0,
@@ -45,7 +72,11 @@ interface Favorito {
   id: string
   origen: string
   destino: string
+  paradas: string[]
+  optimizar: boolean
   fecha: string
+  ruta: RutaResponse | null // snapshot completo: el mapa se ve sin recalcular
+  // Legacy (favoritos guardados antes de la v2): solo origen/destino y métricas
   distancia_km?: number
   duracion_min?: number
 }
@@ -97,12 +128,28 @@ const formatoTiempo = (min: number): string => {
   return h > 0 ? `${h}h ${r}m` : `${r}m`
 }
 
+// Números en formato español: punto de miles, coma decimal (132,5 km)
+const formatNum = (n: number | undefined | null): string => {
+  if (n === undefined || n === null || Number.isNaN(n)) return ''
+  return n.toLocaleString('es-ES', { maximumFractionDigits: 1 })
+}
+
+// ---------- Toast (mensajes de confirmación) ----------
+const toast = ref<string | null>(null)
+let toastTimer: number | undefined
+function mostrarToast(msg: string) {
+  toast.value = msg
+  window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => { toast.value = null }, 2600)
+}
+
 // ---------- localStorage ----------
 const LS_KEYS = {
   vehiculos: 'busroad_vehiculos',
   vehiculoActivo: 'busroad_vehiculo_activo',
   favoritos: 'busroad_favoritos',
-  config: 'busroad_config'
+  config: 'busroad_config',
+  borrador: 'busroad_borrador'
 }
 
 function cargarPersistencia() {
@@ -115,6 +162,17 @@ function cargarPersistencia() {
     if (f) favoritos.value = JSON.parse(f)
     const c = localStorage.getItem(LS_KEYS.config)
     if (c) config.value = { ...config.value, ...JSON.parse(c) }
+    // Borrador de la ruta en curso: no se pierde al recargar la página
+    const b = localStorage.getItem(LS_KEYS.borrador)
+    if (b) {
+      const parsed = JSON.parse(b)
+      if (typeof parsed.origen === 'string') origen.value = parsed.origen
+      if (typeof parsed.destino === 'string') destino.value = parsed.destino
+      if (Array.isArray(parsed.paradas)) {
+        paradas.value = parsed.paradas.filter((p: unknown) => typeof p === 'string')
+      }
+      if (typeof parsed.optimizar === 'boolean') optimizar.value = parsed.optimizar
+    }
   } catch (e) {
     console.error('Error cargando localStorage', e)
   }
@@ -124,6 +182,11 @@ watch(vehiculos, v => localStorage.setItem(LS_KEYS.vehiculos, JSON.stringify(v))
 watch(vehiculoActivoId, v => localStorage.setItem(LS_KEYS.vehiculoActivo, JSON.stringify(v)))
 watch(favoritos, f => localStorage.setItem(LS_KEYS.favoritos, JSON.stringify(f)), { deep: true })
 watch(config, c => localStorage.setItem(LS_KEYS.config, JSON.stringify(c)), { deep: true })
+watch(
+  () => ({ origen: origen.value, destino: destino.value, paradas: paradas.value, optimizar: optimizar.value }),
+  v => localStorage.setItem(LS_KEYS.borrador, JSON.stringify(v)),
+  { deep: true }
+)
 
 onMounted(cargarPersistencia)
 
@@ -185,27 +248,60 @@ function eliminarVehiculo(id: string) {
 }
 
 // ---------- Gestión de favoritos ----------
+// Métricas para la tarjeta: los favoritos nuevos llevan el snapshot en `ruta`,
+// los antiguos (legacy) solo distancia_km/duracion_min sueltos.
+const favDistancia = (f: Favorito): number | undefined => f.ruta?.distancia_km ?? f.distancia_km
+const favDuracion = (f: Favorito): number | undefined => f.ruta?.duracion_min ?? f.duracion_min
+
 function guardarFavorito() {
   if (!result.value) return
+  const paradasFinales = Array.isArray(result.value.paradas)
+    ? result.value.paradas.filter(Boolean)
+    : []
   const nuevo: Favorito = {
     id: crypto.randomUUID(),
     origen: result.value.origen || origen.value,
     destino: result.value.destino || destino.value,
+    paradas: paradasFinales,
+    optimizar: optimizar.value,
     fecha: new Date().toLocaleDateString('es-ES'),
-    distancia_km: result.value.distancia_km,
-    duracion_min: result.value.duracion_min
+    ruta: { ...result.value }
   }
-  favoritos.value.push(nuevo)
+  // Reemplazar una ruta idéntica ya guardada (no acumular duplicados);
+  // una ruta modificada se guarda como entrada nueva.
+  const idx = favoritos.value.findIndex(f =>
+    f.origen === nuevo.origen &&
+    f.destino === nuevo.destino &&
+    JSON.stringify(f.paradas) === JSON.stringify(nuevo.paradas) &&
+    f.optimizar === nuevo.optimizar
+  )
+  if (idx !== -1) favoritos.value.splice(idx, 1, nuevo)
+  else favoritos.value.push(nuevo)
+  const n = paradasFinales.length
+  mostrarToast(
+    n > 0
+      ? `⭐ Ruta guardada con ${n} parada${n > 1 ? 's' : ''}`
+      : '⭐ Ruta guardada'
+  )
 }
 
 function usarFavorito(f: Favorito) {
   origen.value = f.origen
   destino.value = f.destino
+  paradas.value = Array.isArray(f.paradas) ? [...f.paradas] : []
+  optimizar.value = !!f.optimizar
+  // Restaurar el snapshot: el mapa y las tarjetas se ven al instante,
+  // y el usuario puede modificar campos y recalcular si lo necesita
+  result.value = f.ruta ? { ...f.ruta } : null
+  if (f.ruta?.polyline) {
+    abrirEnMapas(f.ruta.origen, f.ruta.destino, f.ruta.polyline)
+  }
   activeTab.value = 'ruta'
 }
 
 function eliminarFavorito(id: string) {
   favoritos.value = favoritos.value.filter(x => x.id !== id)
+  mostrarToast('🗑️ Ruta eliminada de favoritos')
 }
 
 // ---------- Temas y fuentes ----------
@@ -427,9 +523,9 @@ const moverParada = (index: number, delta: number) => {
             </div>
           </div>
           <div v-if="vehiculoActivo" class="vehicle-dims">
-            <span class="vd-item" title="Altura"><b>{{ vehiculoActivo.alto_m }}</b> m</span>
-            <span class="vd-item" title="Peso"><b>{{ (vehiculoActivo.peso_kg / 1000).toFixed(1) }}</b> t</span>
-            <span class="vd-item" title="Longitud"><b>{{ vehiculoActivo.largo_m }}</b> m</span>
+            <span class="vd-item" title="Altura"><b>{{ formatNum(vehiculoActivo.alto_m) }}</b> m</span>
+            <span class="vd-item" title="Peso"><b>{{ formatNum(vehiculoActivo.peso_kg / 1000) }}</b> t</span>
+            <span class="vd-item" title="Longitud"><b>{{ formatNum(vehiculoActivo.largo_m) }}</b> m</span>
           </div>
           <button class="edit-btn" @click="activeTab = 'vehiculo'">EDITAR</button>
         </div>
@@ -481,7 +577,7 @@ const moverParada = (index: number, delta: number) => {
                   <p class="route-sub">Motor: {{ result.motor }}</p>
                 </div>
                 <div class="route-dist">
-                  <span class="route-dist-value">{{ result.distancia_km }}</span>
+                  <span class="route-dist-value">{{ formatNum(result.distancia_km) }}</span>
                   <span class="route-dist-unit">km</span>
                 </div>
               </div>
@@ -500,8 +596,14 @@ const moverParada = (index: number, delta: number) => {
                 <a v-if="wazeSeguraUrl" class="nav-btn-alt" :href="wazeSeguraUrl" target="_blank" rel="noopener">
                   Waze
                 </a>
-                <button class="nav-btn-alt fav-inline" @click="guardarFavorito" title="Guardar esta ruta">⭐</button>
               </div>
+              <button
+                class="btn btn-ghost btn-save-ruta"
+                @click="guardarFavorito"
+                title="Guarda la ruta completa: origen, paradas y destino"
+              >
+                ⭐ Guardar ruta en favoritos
+              </button>
             </div>
           </div>
 
@@ -517,7 +619,7 @@ const moverParada = (index: number, delta: number) => {
                   <p class="route-sub">Sin restricciones de vehículo</p>
                 </div>
                 <div class="route-dist">
-                  <span class="route-dist-value">{{ result.convencional.distancia_km }}</span>
+                  <span class="route-dist-value">{{ formatNum(result.convencional.distancia_km) }}</span>
                   <span class="route-dist-unit">km</span>
                 </div>
               </div>
@@ -525,7 +627,7 @@ const moverParada = (index: number, delta: number) => {
                 <span>⚠️</span>
                 <div>
                   <span class="warning-title">Más corta pero no apta</span>
-                  <span class="warning-sub">Es {{ diferenciaKm }} km más corta, pero puede pasar por vías con restricciones para tu vehículo</span>
+                  <span class="warning-sub">Es {{ formatNum(diferenciaKm) }} km más corta, pero puede pasar por vías con restricciones para tu vehículo</span>
                 </div>
               </div>
               <div v-else-if="diferenciaKm <= 0" class="route-warning ok">
@@ -588,10 +690,10 @@ const moverParada = (index: number, delta: number) => {
             </div>
           </div>
           <div class="bus-dims">
-            <div class="bus-dim"><span class="bus-dim-icon">⇕</span><span id="label-height">{{ dimensiones.alto_m.toFixed(1) }} m</span></div>
-            <div class="bus-dim"><span class="bus-dim-icon">⇔</span><span id="label-width">{{ dimensiones.ancho_m.toFixed(1) }} m</span></div>
-            <div class="bus-dim"><span class="bus-dim-icon">⟷</span><span id="label-length">{{ dimensiones.largo_m.toFixed(1) }} m</span></div>
-            <div class="bus-dim"><span class="bus-dim-icon">⚖</span><span id="label-weight">{{ pesoT.toFixed(1) }} t</span></div>
+            <div class="bus-dim"><span class="bus-dim-icon">⇕</span><span id="label-height">{{ formatNum(dimensiones.alto_m) }} m</span></div>
+            <div class="bus-dim"><span class="bus-dim-icon">⇔</span><span id="label-width">{{ formatNum(dimensiones.ancho_m) }} m</span></div>
+            <div class="bus-dim"><span class="bus-dim-icon">⟷</span><span id="label-length">{{ formatNum(dimensiones.largo_m) }} m</span></div>
+            <div class="bus-dim"><span class="bus-dim-icon">⚖</span><span id="label-weight">{{ formatNum(pesoT) }} t</span></div>
           </div>
         </div>
 
@@ -599,7 +701,7 @@ const moverParada = (index: number, delta: number) => {
         <div class="slider-card">
           <div class="slider-head">
             <label for="height">Altura (m)</label>
-            <div class="slider-value"><span id="val-height">{{ dimensiones.alto_m.toFixed(1) }}</span></div>
+            <div class="slider-value"><span id="val-height">{{ formatNum(dimensiones.alto_m) }}</span></div>
           </div>
           <input class="slider" id="height" type="range" min="2.0" max="5.0" step="0.1" v-model.number="dimensiones.alto_m" />
           <div class="slider-bounds"><span>2.0 m</span><span>5.0 m</span></div>
@@ -608,7 +710,7 @@ const moverParada = (index: number, delta: number) => {
         <div class="slider-card">
           <div class="slider-head">
             <label for="width">Ancho (m)</label>
-            <div class="slider-value"><span id="val-width">{{ dimensiones.ancho_m.toFixed(1) }}</span></div>
+            <div class="slider-value"><span id="val-width">{{ formatNum(dimensiones.ancho_m) }}</span></div>
           </div>
           <input class="slider" id="width" type="range" min="2.0" max="3.5" step="0.1" v-model.number="dimensiones.ancho_m" />
           <div class="slider-bounds"><span>2.0 m</span><span>3.5 m</span></div>
@@ -617,7 +719,7 @@ const moverParada = (index: number, delta: number) => {
         <div class="slider-card">
           <div class="slider-head">
             <label for="length">Largo (m)</label>
-            <div class="slider-value"><span id="val-length">{{ dimensiones.largo_m.toFixed(1) }}</span></div>
+            <div class="slider-value"><span id="val-length">{{ formatNum(dimensiones.largo_m) }}</span></div>
           </div>
           <input class="slider" id="length" type="range" min="5.0" max="25.0" step="0.5" v-model.number="dimensiones.largo_m" />
           <div class="slider-bounds"><span>5.0 m</span><span>25.0 m</span></div>
@@ -626,7 +728,7 @@ const moverParada = (index: number, delta: number) => {
         <div class="slider-card">
           <div class="slider-head">
             <label for="weight">Peso total (t)</label>
-            <div class="slider-value"><span id="val-weight">{{ pesoT.toFixed(1) }}</span></div>
+            <div class="slider-value"><span id="val-weight">{{ formatNum(pesoT) }}</span></div>
           </div>
           <input class="slider" id="weight" type="range" min="3.0" max="44.0" step="0.5" v-model.number="pesoT" />
           <div class="slider-bounds"><span>3.0 t</span><span>44.0 t</span></div>
@@ -648,7 +750,7 @@ const moverParada = (index: number, delta: number) => {
         <div v-for="v in vehiculos" :key="v.id" class="vehiculo-card" :class="{ activo: v.id === vehiculoActivoId }">
           <div class="vehiculo-info">
             <strong>{{ v.nombre }}</strong>
-            <span>{{ v.alto_m }} m alto · {{ v.ancho_m }} m ancho · {{ v.largo_m }} m largo · {{ v.peso_kg }} kg</span>
+            <span>{{ formatNum(v.alto_m) }} m alto · {{ formatNum(v.ancho_m) }} m ancho · {{ formatNum(v.largo_m) }} m largo · {{ formatNum(v.peso_kg) }} kg</span>
           </div>
           <div class="vehiculo-actions">
             <button class="btn btn-ghost btn-sm" @click="cargarVehiculo(v.id)">Usar</button>
@@ -671,7 +773,12 @@ const moverParada = (index: number, delta: number) => {
           <div class="favorito-info">
             <strong>{{ f.origen }}</strong>
             <span>→ {{ f.destino }}</span>
-            <span v-if="f.distancia_km" class="favorito-meta">{{ f.distancia_km }} km · {{ f.duracion_min }} min · {{ f.fecha }}</span>
+            <span v-if="f.paradas && f.paradas.length > 0" class="favorito-paradas">
+              🛑 {{ f.paradas.length }} parada{{ f.paradas.length > 1 ? 's' : '' }}: {{ f.paradas.join(' → ') }}
+            </span>
+            <span v-if="favDistancia(f) !== undefined" class="favorito-meta">
+              {{ formatNum(favDistancia(f)) }} km · {{ favDuracion(f) }} min · {{ f.fecha }}<span v-if="f.optimizar"> · optimizada</span>
+            </span>
             <span v-else class="favorito-meta">{{ f.fecha }}</span>
           </div>
           <div class="vehiculo-actions">
@@ -707,6 +814,11 @@ const moverParada = (index: number, delta: number) => {
         </div>
       </section>
     </main>
+
+    <!-- Toast de confirmación -->
+    <Transition name="toast">
+      <div v-if="toast" class="toast" role="status">{{ toast }}</div>
+    </Transition>
 
     <!-- ══════════ BARRA INFERIOR DE NAVEGACIÓN ══════════ -->
     <nav class="bottom-nav">
@@ -1149,12 +1261,34 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 
 .route-nav { display: flex; gap: 8px; }
 
-.fav-inline {
-  padding: 12px;
-  font-size: 1.1em;
-  line-height: 1;
-  cursor: pointer;
+.btn-save-ruta {
+  width: 100%;
+  margin-top: 10px;
 }
+
+/* Toast de confirmación */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  background: #222a3d;
+  border: 1px solid var(--tema-primary);
+  color: #e5e7eb;
+  padding: 10px 18px;
+  border-radius: 100px;
+  font-size: 0.85em;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 999;
+  white-space: nowrap;
+  max-width: 90vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
 
 .compat-box {
   display: flex;
@@ -1297,6 +1431,8 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 .vehiculo-info, .favorito-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 
 .vehiculo-info span, .favorito-info span { font-size: 0.82em; color: #9ca3af; }
+
+.favorito-info .favorito-paradas { color: var(--tema-primary); }
 
 .favorito-meta { font-size: 0.78em !important; color: #6b7280 !important; }
 

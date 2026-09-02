@@ -61,7 +61,7 @@ def test_pregunta_fuera_de_corpus_responde_sin_llm():
 def test_rate_limit_ventana():
     assistant._preguntas_ip.clear()
     with pytest.raises(assistant.RateLimitExceeded):
-        for _ in range(assistant.MAX_PREGUNTAS_VENTANA + 1):
+        for _ in range(assistant.MAX_PREGUNTAS_DIA_POR_IP + 1):
             assistant.enforce_rate_limit("1.2.3.4")
 
 
@@ -69,8 +69,10 @@ def test_rate_limit_diario():
     import time as _t
 
     assistant._preguntas_ip.clear()
-    assistant._dia_actual = _t.strftime("%Y-%m-%d")
-    assistant._preguntas_dia = assistant.MAX_PREGUNTAS_DIA
+    # Simular que esta IP ya agotó el cupo de hoy
+    clave = f"{_t.strftime('%Y-%m-%d')}|5.6.7.8"
+    assistant._preguntas_ip[clave] = assistant.MAX_PREGUNTAS_DIA_POR_IP
     with pytest.raises(assistant.RateLimitExceeded):
         assistant.enforce_rate_limit("5.6.7.8")
-    assistant._preguntas_dia = 0
+    # Otra IP distinta puede seguir preguntando el mismo día
+    assistant.enforce_rate_limit("9.9.9.9")

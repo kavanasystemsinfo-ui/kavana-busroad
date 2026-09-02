@@ -22,6 +22,7 @@ ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-hgv
 ORS_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
 ORS_OPTIMIZATION_URL = "https://api.openrouteservice.org/optimization"
 GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
 
 # ------------------------------------------------------------------ esquemas
@@ -77,7 +78,7 @@ async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
             ORS_GEOCODE_URL,
-            params={"text": texto, "api_key": None, "size": 3, "boundary.country": "ESP"},
+            params={"text": texto, "size": 3, "boundary.country": "ESP"},
             headers={"Authorization": api_key},
         )
     if r.status_code != 200:
@@ -87,6 +88,43 @@ async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
         for f in r.json().get("features", [])
         if f.get("geometry", {}).get("coordinates")
     ]
+
+
+async def _geocodificar_nominatim(texto: str) -> list[list[float]]:
+    """Respaldo con Nominatim (OpenStreetMap) cuando ORS falla (cuota, caída).
+
+    Gratis y sin key, pero con límite estricto (~1 req/s) y solo como
+    fallback, nunca como motor principal. España forzada con countrycodes.
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(
+            NOMINATIM_URL,
+            params={
+                "q": texto,
+                "format": "jsonv2",
+                "limit": 3,
+                "countrycodes": "es",
+            },
+            headers={"User-Agent": "KavanaBusRoad/1.0 (contact: kavanasystems.info@gmail.com)"},
+        )
+    if r.status_code != 200:
+        return []
+    try:
+        return [
+            [float(f["lon"]), float(f["lat"])]
+            for f in r.json()
+            if f.get("lat") and f.get("lon")
+        ]
+    except (ValueError, TypeError):
+        return []
+
+
+async def _geocodificar(api_key: str, texto: str) -> list[list[float]]:
+    """Geocodifica con ORS; si ORS no encuentra (o está sin cuota), respalda con Nominatim."""
+    candidatos = await _geocodificar_ors(api_key, texto)
+    if candidatos:
+        return candidatos
+    return await _geocodificar_nominatim(texto)
 
 
 async def _pedir_ruta_ors(
@@ -186,15 +224,15 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     También calcula la ruta convencional (driving-car, sin restricciones)
     con las mismas coordenadas, para que el usuario compare la diferencia.
     """
-    origenes = await _geocodificar_ors(api_key, req.origen)
-    destinos = await _geocodificar_ors(api_key, req.destino)
+    origenes = await _geocodificar(api_key, req.origen)
+    destinos = await _geocodificar(api_key, req.destino)
     if not origenes or not destinos:
         raise ValueError("No pude localizar origen o destino. Prueba con nombres más exactos.")
 
     # Geocodificar paradas intermedias (cada una con sus candidatos)
     paradas_candidatas: list[list] = []
     for p in req.paradas:
-        cands = await _geocodificar_ors(api_key, p)
+        cands = await _geocodificar(api_key, p)
         if not cands:
             raise ValueError(f"No pude localizar la parada: {p}")
         paradas_candidatas.append(cands)

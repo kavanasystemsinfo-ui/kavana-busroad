@@ -99,3 +99,55 @@ def test_calcular_ors_paradas_orden_manual(monkeypatch):
     req = _req(paradas=["Parada A", "Parada B"], optimizar=False)
     resp = asyncio.run(motor._calcular_ors("key", req))
     assert resp.paradas == ["Parada A", "Parada B"]
+
+
+# ------------------------------------------------- respaldo geocodificación
+def test_geocodificar_respalda_con_nominatim_cuando_ors_falla(monkeypatch):
+    """Si ORS no devuelve candidatos (cuota agotada, caída), usar Nominatim."""
+
+    async def fake_ors(key, texto):
+        return []  # ORS sin cuota / sin resultados
+
+    async def fake_nominatim(texto):
+        return [[-0.3763, 39.4699]]  # Valencia centro
+
+    monkeypatch.setattr(motor, "_geocodificar_ors", fake_ors)
+    monkeypatch.setattr(motor, "_geocodificar_nominatim", fake_nominatim)
+
+    res = asyncio.run(motor._geocodificar("key", "Valencia"))
+    assert res == [[-0.3763, 39.4699]]
+
+
+def test_geocodificar_usa_ors_cuando_tiene_resultados(monkeypatch):
+    """Con ORS sano, Nominatim no se llama (es solo respaldo de emergencia)."""
+
+    llamado = {"nominatim": False}
+
+    async def fake_ors(key, texto):
+        return [[0.40, 39.40]]
+
+    async def fake_nominatim(texto):
+        llamado["nominatim"] = True
+        return [[-0.3763, 39.4699]]
+
+    monkeypatch.setattr(motor, "_geocodificar_ors", fake_ors)
+    monkeypatch.setattr(motor, "_geocodificar_nominatim", fake_nominatim)
+
+    res = asyncio.run(motor._geocodificar("key", "Valencia"))
+    assert res == [[0.40, 39.40]]
+    assert llamado["nominatim"] is False
+
+
+def test_calcular_ors_error_honesto_cuando_ambos_geocoders_fallan(monkeypatch):
+    """Si ORS y Nominatim no localizan nada, el error es claro (no mock)."""
+
+    async def fake_geocodificar(key, texto):
+        return []
+
+    monkeypatch.setattr(motor, "_geocodificar", fake_geocodificar)
+
+    import pytest
+
+    req = _req(origen="XYZexiste?pqrs", destino="Otroinexistente?abcd")
+    with pytest.raises(ValueError, match="No pude localizar"):
+        asyncio.run(motor._calcular_ors("key", req))

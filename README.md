@@ -81,6 +81,21 @@ VITE_API_URL=https://busroad-api.kavanasystems.com
 # Para desarrollo local: VITE_API_URL=http://localhost:8000
 ```
 
+## 💰 Cómo está construido y cómo lo construiría con presupuesto
+
+BusRoad es una pieza de portafolio de Kavana Systems con **un solo usuario real: su autor**, y está construida para costar ~0 €/mes. Todo lo de abajo son decisiones tomadas con ese presupuesto en la mano, no limitaciones escondidas: cada partida dice qué hay hoy, por qué, y qué cambiaría el día que haya usuarios reales y presupuesto. Lo que no cambia está al final.
+
+- **Motor de rutas (OpenRouteService, plan gratuito):** las rutas se calculan con `driving-hgv` de ORS usando una clave gratuita (2.000 rutas/día, ver `backend/.env.example`) y la geocodificación respalda con Nominatim, gratis pero con límite estricto (~1 req/s, documentado en `backend/app/motor.py`). Con usuarios reales: plan de pago de ORS (o motor propio sobre datos de OSM) más caché de rutas y geocodificación para no depender de una cuota diaria ni de un servicio limitado a 1 req/s.
+- **Backend en Fly.io hobby:** una sola app (`busroad-api`) en una única región (`cdg`), con VM de 256 MB y 1 CPU compartida, `auto_stop_machines = "stop"` y `min_machines_running = 0` (`fly.toml`). Eso es lo que hace que el coste sea cero en reposo, a cambio de un *cold start* de varios segundos en el primer request y de no tener ninguna instancia caliente. Con usuarios reales: mínimo de máquinas en marcha, más memoria y CPU, más de una región y monitorización del arranque en frío.
+- **Frontend en Vercel y DNS a mano:** la PWA vive en el plan gratuito de Vercel y los registros A/AAAA/`_acme-challenge` de `busroad-api.kavanasystems.com` se mantienen manualmente en Namecheap. Con usuarios reales: plan de pago con analítica y WAF, y DNS (y certificados) gestionados como código para que no dependan de que alguien recuerde actualizarlos cuando cambien las IPs.
+- **Sin base de datos ni autenticación:** no hay cuentas, ni sesiones, ni persistencia en servidor; los vehículos, favoritos, configuración y el borrador de ruta se guardan en `localStorage` del navegador (`frontend/src/App.vue`). Ventaja hoy: cero coste y cero datos personales en el servidor. Coste real: los datos son de cada dispositivo y se pierden si se borra el almacenamiento del navegador. Con usuarios reales: cuentas, base de datos de vehículos/flotas/rutas y sincronización entre dispositivos.
+- **API abierta con rate limit en memoria:** `/api/v1/ruta` y el asistente (`/api/v1/assistant/ask-tech`) no piden autenticación; la única protección del asistente es un límite de 15 preguntas/día por IP con un contador en memoria del proceso (`backend/app/assistant.py`), y el CORS es una lista fija de orígenes en `backend/app/main.py`. Con usuarios reales: claves de API, cuotas por cuenta, rate limit distribuido (el contador en memoria se pierde al reiniciar la máquina y no se comparte entre instancias) y orígenes CORS por entorno.
+- **Asistente RAG con modelo gratuito:** TF-IDF en memoria sobre el README y los ADRs, con un modelo `:free` de OpenRouter por defecto (`ASSISTANT_MODEL_FREE` en `backend/app/assistant.py`). Cuesta cero y responde solo con la documentación real del repo, pero el índice se recalcula en el proceso y el modelo gratuito no tiene garantía de disponibilidad. Con usuarios reales: índice vectorial con embeddings, modelo de pago con SLA y corpus versionado.
+- **Pruebas y entrega manuales:** hay tests de motor y de asistente en `backend/tests/` (pytest, ejecutados a mano; pytest no está en `backend/requirements.txt`) y **no existe pipeline de CI** (no hay `.github/`): el backend se despliega lanzando `flyctl deploy` y el frontend lo despliega Vercel al hacer push. Con usuarios reales: CI en GitHub Actions que corra los tests en cada PR, entorno de staging y despliegue por tags.
+- **Sin entorno de producción separado ni telemetría externa:** si no hay claves configuradas el backend responde una ruta de ejemplo (mock, `backend/app/motor.py`), lo que permite desarrollar sin gastar cuota, y en producción solo hay los logs de Fly.io y Vercel. Con usuarios reales: dev/staging/prod separados, captura de errores en producción y métricas de latencia y de uso por endpoint.
+
+Lo que no cambia entre los dos escenarios es lo que hace útil al proyecto: las restricciones **reales** de altura, anchura, largo y peso se aplican con el perfil `driving-hgv` de OpenRouteService sobre datos de OpenStreetMap (con España forzada en la geocodificación y Nominatim como respaldo cuando ORS falla), el usuario ve **a la vez** la ruta segura y la convencional para comparar, la geometría de ORS se preserva íntegra en el cliente (Leaflet) en lugar de resumirse, la navegación se delega a Google Maps/Waze inyectando waypoints en los cambios de dirección > 12°, y las paradas intermedias se optimizan con VROOM (medido en producción: 132,1 km → 90,9 km). Tampoco cambia la PWA instalable que funciona offline, ni que cada decisión de este repo esté escrita en un ADR con sus límites reconocidos — incluido el cold start de Fly.io y la cuota diaria de ORS. Esa parte no es de presupuesto: es el producto.
+
 ## ▶️ Ejecutar en desarrollo
 
 ### Backend
@@ -114,7 +129,7 @@ docker run -p 8000:8000 --env-file .env kavana-busroad-backend
 
 ## 🚀 Despliegue en Fly.io
 
-El backend corre en **Fly.io** (machines). Configuración en `backend/fly.toml` (región `cdg`, auto-stop cuando está en reposo para coste cero).
+El backend corre en **Fly.io** (machines). Configuración en `fly.toml` (raíz del repo): región `cdg`, una máquina de 256 MB y auto-stop cuando está en reposo para coste cero.
 
 ```bash
 cd backend
@@ -237,6 +252,7 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 | [004](docs/adr/004-comparacion-ruta-estandar-vs-hgv.md) | Comparación simultánea de ruta estándar y ruta HGV como decisión de UX + técnica |
 | [005](docs/adr/005-backend-flyio-independiente-vps.md) | Backend en Fly.io: servicio independiente del VPS de laboratorio |
 | [006](docs/adr/006-paradas-intermedias-optimizacion-vroom.md) | Paradas intermedias + optimización de orden con VROOM (rutas escolares) |
+| [007](docs/adr/007-coste-cero-decisiones-presupuesto.md) | Coste cero y decisiones tomadas por presupuesto (qué hay hoy y qué cambiaría con usuarios reales) |
 
 ## 📚 Próximos pasos
 
@@ -262,4 +278,4 @@ Proyecto privado de Kavana Systems. No se redistribuye sin permiso explícito.
 
 ---
 
-*README actualizado el 2026-08-04 por Hermes Agent siguiendo los estándares de Kavana Engineering.*
+*README actualizado el 2026-09-17 por Hermes Agent siguiendo los estándares de Kavana Engineering.*

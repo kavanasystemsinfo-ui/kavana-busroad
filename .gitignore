@@ -8,6 +8,9 @@ venv/
 .env
 .env.local
 
+# Store de persistencia del backend (cache + rate limit, se regenera solo)
+store.json
+
 # Node
 node_modules/
 dist/

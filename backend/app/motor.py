@@ -10,13 +10,33 @@ Motores (en orden de preferencia):
 Sin claves responde con una ruta de ejemplo (mock).
 """
 
+import hashlib
+import json
 import os
+import time
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .store import Store
+
 router = APIRouter(prefix="/api/v1", tags=["ruta"])
+
+# store compartido (cache + contadores). Los tests lo reemplazan por un Store
+# apuntando a un fichero temporal.
+store = Store()
+
+# TTLs: rutas 24h (Una ruta escolar no cambia en el día), geocodificación 7
+# días, contadores 25h (cubren el día + margen de tiempo de servidor).
+TTL_RUTA_S = 24 * 3600
+TTL_GEOCODE_S = 7 * 24 * 3600
+TTL_CONTADOR_S = 25 * 3600
+
+# Límite de rutas nuevas (miss de caché) por IP al día. Solo cuenta los misses:
+# una ruta cacheada que se repite no vuelve a gastar cuota ORS.
+RUTAS_MAX_POR_IP_DIA = int(os.environ.get("RUTAS_MAX_POR_IP_DIA", "30"))
 
 ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-hgv"
 ORS_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
@@ -120,11 +140,24 @@ async def _geocodificar_nominatim(texto: str) -> list[list[float]]:
 
 
 async def _geocodificar(api_key: str, texto: str) -> list[list[float]]:
-    """Geocodifica con ORS; si ORS no encuentra (o está sin cuota), respalda con Nominatim."""
+    """Geocodifica con ORS; si ORS no encuentra (o está sin cuota), respalda con Nominatim.
+
+    Resultado cacheado en disco (store) por dirección normalizada: una ruta
+    repetida con el mismo origen no vuelve a gastar cuota ORS ni a llamar a
+    Nominatim (que además tiene límite de ~1 req/s).
+    """
+    clave = " ".join(texto.strip().lower().split())
+    if not clave:
+        return []
+    cacheado = store.cache_get("geocode", clave, TTL_GEOCODE_S)
+    if cacheado is not None:
+        return cacheado
     candidatos = await _geocodificar_ors(api_key, texto)
+    if not candidatos:
+        candidatos = await _geocodificar_nominatim(texto)
     if candidatos:
-        return candidatos
-    return await _geocodificar_nominatim(texto)
+        store.cache_set("geocode", clave, candidatos)
+    return candidatos
 
 
 async def _pedir_ruta_ors(
@@ -360,15 +393,49 @@ def _mock(req: RutaRequest) -> RutaResponse:
 
 
 # ------------------------------------------------------------------- rutas
+def _clave_cache_ruta(req: RutaRequest) -> str:
+    """Clave canónica de una ruta: hash de origen/destino/paradas/optimizar/dimensiones.
+
+    Una misma ruta escolar repetida (el patrón real) genera SIEMPRE la misma
+    clave, así que el segundo cálculo sale de caché sin gastar cuota ORS.
+    """
+    v = req.vehiculo
+    canonico = json.dumps(
+        {
+            "origen": req.origen.strip().lower(),
+            "destino": req.destino.strip().lower(),
+            "paradas": [p.strip().lower() for p in req.paradas],
+            "optimizar": req.optimizar,
+            "vehiculo": [round(v.alto_m, 2), round(v.ancho_m, 2), round(v.largo_m, 2), round(v.peso_kg, 0)],
+        },
+        sort_keys=True, ensure_ascii=False,
+    )
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
+
+
 @router.post("/ruta", response_model=RutaResponse)
-async def calcular_ruta(req: RutaRequest):
+async def calcular_ruta(req: RutaRequest, request: Request):
     ors_key = os.environ.get("ORS_API_KEY", "").strip()
     google_key = os.environ.get("GOOGLE_API_KEY", "").strip()
 
     # 1. OpenRouteService: restricciones de dimensiones reales en Europa
     if ors_key:
+        clave = _clave_cache_ruta(req)
+        cacheado = store.cache_get("cache_rutas", clave, TTL_RUTA_S)
+        if cacheado is not None:
+            return RutaResponse(**cacheado)
+        # Rate limit por IP SOLO sobre misses: la ruta cacheada no cuesta ORS.
+        ip = request.client.host if request.client else "unknown"
+        clave_ip = f"{time.strftime('%Y-%m-%d')}|{ip}"
+        if store.counter_get("contador_ruta", clave_ip, TTL_CONTADOR_S) >= RUTAS_MAX_POR_IP_DIA:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": f"Has alcanzado el límite diario de {RUTAS_MAX_POR_IP_DIA} rutas nuevas por visitante. Vuelve mañana."
+                },
+            )
         try:
-            return await _calcular_ors(ors_key, req)
+            resp = await _calcular_ors(ors_key, req)
         except ValueError as e:
             # Log del body para diagnosticar fallos reales de geocodificación
             print(
@@ -377,6 +444,10 @@ async def calcular_ruta(req: RutaRequest):
             )
             # Sin claves no hay nada que devolver; con claves, el error es real
             raise HTTPException(status_code=422, detail=str(e))
+        # Solo se cuenta ni se cachea lo que salió bien (miss auténtico)
+        store.counter_incr("contador_ruta", clave_ip, TTL_CONTADOR_S)
+        store.cache_set("cache_rutas", clave, resp.model_dump())
+        return resp
 
     # 2. Google Routes: ruta estándar (sin dimensiones fuera de EE.UU.)
     if google_key:

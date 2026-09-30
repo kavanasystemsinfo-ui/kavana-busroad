@@ -17,6 +17,8 @@ from pathlib import Path
 
 import httpx
 
+from .store import Store
+
 logger = logging.getLogger(__name__)
 
 # Local: raíz del repo. Producción: /docs (Dockerfile puede copiarlo allí).
@@ -29,7 +31,11 @@ MODELO_PRO = os.getenv("ASSISTANT_MODEL_PRO", "nvidia/nemotron-3-super-120b-a12b
 # - por IP: 15 preguntas / día
 # - longitud: 500 caracteres por pregunta (validada también en el router)
 MAX_PREGUNTAS_DIA_POR_IP = 15
-_preguntas_ip: dict[str, int] = {}  # "fecha|ip" -> contador
+
+# store compartido (contadores persistidos en disco: sobreviven al reinicio
+# del proceso, que antes mataba el límite diario). Los tests lo reemplazan.
+store = Store()
+TTL_PREGUNTAS_S = 25 * 3600
 
 
 class RateLimitExceeded(Exception):
@@ -39,16 +45,12 @@ class RateLimitExceeded(Exception):
 def enforce_rate_limit(ip: str) -> None:
     hoy = time.strftime("%Y-%m-%d")
     clave = f"{hoy}|{ip}"
-    contador = _preguntas_ip.get(clave, 0)
+    contador = store.counter_get("contador_asistente", clave, TTL_PREGUNTAS_S)
     if contador >= MAX_PREGUNTAS_DIA_POR_IP:
         raise RateLimitExceeded(
             f"Has alcanzado el límite de preguntas de hoy (15 por visitante). Vuelve mañana."
         )
-    _preguntas_ip[clave] = contador + 1
-    # Limpieza perezosa: borrar entradas de días anteriores (máx ~1k entradas)
-    if len(_preguntas_ip) > 1000:
-        for k in [k for k in _preguntas_ip if not k.startswith(hoy)]:
-            del _preguntas_ip[k]
+    store.counter_incr("contador_asistente", clave, TTL_PREGUNTAS_S)
 
 
 # ---------------------------------------------------------------- corpus

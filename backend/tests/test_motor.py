@@ -7,8 +7,21 @@ VROOM reordenó), no en el orden que tecleó el usuario.
 """
 
 import asyncio
+import time
+
+from fastapi import HTTPException
+import pytest
 
 from app import motor
+from app.store import Store
+
+
+@pytest.fixture(autouse=True)
+def _store_tmp(tmp_path):
+    """Cada test usa un store en disco aislado (sin pisar el de otros tests)."""
+    st = Store(str(tmp_path / "store.json"))
+    motor.store = st
+    yield st
 
 
 def _req(origen="Valencia", destino="Cheste", paradas=None, optimizar=False):
@@ -151,3 +164,85 @@ def test_calcular_ors_error_honesto_cuando_ambos_geocoders_fallan(monkeypatch):
     req = _req(origen="XYZexiste?pqrs", destino="Otroinexistente?abcd")
     with pytest.raises(ValueError, match="No pude localizar"):
         asyncio.run(motor._calcular_ors("key", req))
+
+
+# --------------------------------------------------- caché de rutas + rate limit
+def test_geocodificar_usa_cache_sin_reiterar_ors(monkeypatch):
+    """La 2ª geocodificación del mismo texto sale de caché (no repite ORS)."""
+    llamadas = {"ors": 0}
+
+    async def fake_ors(key, texto):
+        llamadas["ors"] += 1
+        return [[0.40, 39.40]]
+
+    monkeypatch.setattr(motor, "_geocodificar_ors", fake_ors)
+    monkeypatch.setattr(motor, "_geocodificar_nominatim", lambda texto: [])
+
+    r1 = asyncio.run(motor._geocodificar("key", "Valencia"))
+    r2 = asyncio.run(motor._geocodificar("key", "Valencia"))
+    assert r1 == [[0.40, 39.40]]
+    assert r2 == [[0.40, 39.40]]
+    assert llamadas["ors"] == 1
+
+
+def test_cache_ruta_segunda_llamada_no_golpea_ors(monkeypatch):
+    """Dos requests idénticos por el endpoint: el 2º sale de caché (1 solo _calcular_ors)."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    llamadas = {"n": 0}
+
+    async def fake_calcular(key, req):
+        llamadas["n"] += 1
+        return motor._mock(req)
+
+    monkeypatch.setattr(motor, "_calcular_ors", fake_calcular)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    monkeypatch.setenv("ORS_API_KEY", "test-key")
+
+    client = TestClient(app)
+    body = {
+        "origen": "Valencia",
+        "destino": "Cheste",
+        "paradas": [],
+        "optimizar": False,
+        "vehiculo": {"alto_m": 3.0, "ancho_m": 2.5, "largo_m": 10.0, "peso_kg": 12000},
+    }
+    r1 = client.post("/api/v1/ruta", json=body)
+    r2 = client.post("/api/v1/ruta", json=body)
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["distancia_km"] == r2.json()["distancia_km"]
+    assert llamadas["n"] == 1, "el 2º request debió salir de caché sin llamar a ORS"
+
+
+def test_rate_limit_por_ip_devuelve_429(monkeypatch):
+    """Superado el límite diario de misses, un request nuevo devuelve 429."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    async def fake_calcular(key, req):
+        return motor._mock(req)
+
+    monkeypatch.setattr(motor, "_calcular_ors", fake_calcular)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    monkeypatch.setenv("ORS_API_KEY", "test-key")
+
+    motor.RUTAS_MAX_POR_IP_DIA = 2
+    body = {
+        "origen": "Valencia",
+        "destino": "Cheste",
+        "paradas": [],
+        "optimizar": False,
+        "vehiculo": {"alto_m": 3.0, "ancho_m": 2.5, "largo_m": 10.0, "peso_kg": 12000},
+    }
+    client = TestClient(app)
+    # 2 misses distintos (destinos distintos para no cachear) + 1 más con cache limpia
+    r1 = client.post("/api/v1/ruta", json={**body, "destino": "Paterna"})
+    r2 = client.post("/api/v1/ruta", json={**body, "destino": "Riba-roja"})
+    r3 = client.post("/api/v1/ruta", json={**body, "destino": "Liria"})
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r3.status_code == 429

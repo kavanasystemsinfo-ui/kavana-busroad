@@ -58,21 +58,44 @@ def test_pregunta_fuera_de_corpus_responde_sin_llm():
     assert not docs or docs[0]["score"] < 0.02
 
 
-def test_rate_limit_ventana():
-    assistant._preguntas_ip.clear()
+def test_rate_limit_ventana(tmp_path, monkeypatch):
+    from app.store import Store
+
+    st = Store(str(tmp_path / "store.json"))
+    assistant.store = st
     with pytest.raises(assistant.RateLimitExceeded):
         for _ in range(assistant.MAX_PREGUNTAS_DIA_POR_IP + 1):
             assistant.enforce_rate_limit("1.2.3.4")
 
 
-def test_rate_limit_diario():
+def test_rate_limit_diario(tmp_path, monkeypatch):
     import time as _t
 
-    assistant._preguntas_ip.clear()
+    from app.store import Store
+
+    st = Store(str(tmp_path / "store.json"))
+    assistant.store = st
     # Simular que esta IP ya agotó el cupo de hoy
     clave = f"{_t.strftime('%Y-%m-%d')}|5.6.7.8"
-    assistant._preguntas_ip[clave] = assistant.MAX_PREGUNTAS_DIA_POR_IP
+    for _ in range(assistant.MAX_PREGUNTAS_DIA_POR_IP):
+        st.counter_incr("contador_asistente", clave, assistant.TTL_PREGUNTAS_S)
     with pytest.raises(assistant.RateLimitExceeded):
         assistant.enforce_rate_limit("5.6.7.8")
     # Otra IP distinta puede seguir preguntando el mismo día
     assistant.enforce_rate_limit("9.9.9.9")
+
+
+def test_rate_limit_persiste_entre_reinicios(tmp_path):
+    """El contador del asistente sobrevive a un reinicio del proceso (store en disco)."""
+    from app.store import Store
+
+    st = Store(str(tmp_path / "store.json"))
+    assistant.store = st
+    clave = f"{__import__('time').strftime('%Y-%m-%d')}|7.7.7.7"
+    for _ in range(assistant.MAX_PREGUNTAS_DIA_POR_IP):
+        assistant.enforce_rate_limit("7.7.7.7")
+    # "Reinicio del proceso": nueva instancia de Store con el mismo fichero
+    st2 = Store(str(tmp_path / "store.json"))
+    assistant.store = st2
+    with pytest.raises(assistant.RateLimitExceeded):
+        assistant.enforce_rate_limit("7.7.7.7")

@@ -83,6 +83,39 @@ cada límite aceptado queda escrito:
 - **Entrega manual**: sin CI, un push no valida nada; los tests hay que
   ejecutarlos a mano y con pytest instalado aparte.
 
+## Actualización 2026-09-30 (paquete de robustez, coste cero)
+
+El ADR se escribió en 2026-09-17 cuando el rate limit era solo en memoria y no
+existía CI. Con Jorge dando OK al paquete de robustez (gabinete BusRoad), dos
+límites cambian sin tocar el presupuesto:
+
+- **Rate limit persistido.** El contador del asistente y el nuevo límite de
+  `/api/v1/ruta` se guardan en un fichero JSON en disco (`backend/app/store.py`,
+  write atómico, TTL 25h por entrada). Sobreviven al reinicio del proceso /
+  auto-stop de Fly. Se pierde solo al desplegar una imagen nueva (fichero del
+  contenedor nuevo), aceptable para una caché de contadores.
+- **Caché de rutas y geocodificación.** Cada `/api/v1/ruta` valida antes la
+  caché (clave canónica origen|destino|paradas|optimizar|dimensiones) y solo
+  golpea ORS en miss. Dos requests idénticos consecutivos: el segundo sale de
+  caché sin gastar cuota. La geocodificación idem por dirección normalizada.
+- **CI en GitHub Actions.** `.github/workflows/ci.yml` corre pytest en cada
+  push y PR (motor, asistente, store). pytest sigue sin estar en
+  `requirements.txt` (lo instala el propio CI): la entrega manual dejó de ser
+  la única verificación.
+- **Rate limit de `/api/v1/ruta`:** 30 miss/día por IP (configurable por env
+  `RUTAS_MAX_POR_IP_DIA`); solo cuentan las rutas que no salen de caché.
+
+Esta actualización no cambia el espíritu del ADR (coste ~0 €/mes, sin cuenta
+ni BD para el usuario final); solo cierra dos límites que el gabinete marcó
+como "sin excusa para un coste cero".
+
+## Nota de histórico
+
+Las líneas del Contexto/Decisión/Consecuencias que describen el rate limit "en
+memoria" y "sin CI" quedan como **registro histórico** de cómo estaba el
+sistema en 2026-09-17. La realidad actual es la descrita arriba. Mantener el
+original sin reescribirlo evita falsificar el proceso de decisión.
+
 ## Señal de revisión
 
 Revisar este ADR cuando ocurra cualquiera de estas cosas:

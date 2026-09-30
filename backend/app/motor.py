@@ -1,15 +1,19 @@
 """Motor de rutas para vehículos grandes con restricciones de dimensiones.
 
-Motores (en orden de preferencia):
-1. OpenRouteService (perfil driving-hgv): restricciones de altura/anchura/
-   largo/peso REALES en Europa (datos OpenStreetMap). Requiere ORS_API_KEY.
-2. Google Routes API: ruta estándar de conducción (Google no soporta
-   restricciones de dimensiones fuera de EE.UU.). Requiere GOOGLE_API_KEY.
-3. Mock: respuesta de ejemplo sin ninguna clave para desarrollo.
+El ruteo real usa OpenRouteService (perfil driving-hgv, restricciones reales
+en Europa con datos de OpenStreetMap). Requiere ORS_API_KEY.
+
+Respaldo honesto (NUNCA mock a escondidas: con claves y fallo real se devuelve
+el error, el mock es solo para desarrollo sin claves):
+- Google Routes API se usa únicamente cuando NO hay ORS_API_KEY (ruta estándar
+  de conducción; Google no aplica restricciones de dimensiones fuera de EE.UU.).
+- Geocodificación: si ORS no localiza (o está sin cuota), respalda con
+  Nominatim/OSM, serializado a ~1 req/s.
 
 Sin claves responde con una ruta de ejemplo (mock).
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -37,6 +41,25 @@ TTL_CONTADOR_S = 25 * 3600
 # Límite de rutas nuevas (miss de caché) por IP al día. Solo cuenta los misses:
 # una ruta cacheada que se repite no vuelve a gastar cuota ORS.
 RUTAS_MAX_POR_IP_DIA = int(os.environ.get("RUTAS_MAX_POR_IP_DIA", "30"))
+
+# Nominatim (fallback de geocodificación, gratis) exige ~1 req/s. Serializamos
+# las llamadas con un lock de proceso para no autosabotear el fallback cuando
+# ORS está sin cuota y hasta 20 paradas caen en Nominatim seguidas.
+NOMINATIM_INTERVALO_S = 1.0
+_nominatim_lock = asyncio.Lock()
+_ultimo_nominatim = 0.0
+
+
+async def _respetar_intervalo_nominatim() -> None:
+    """Espera lo que falte para que pasen >=1 s entre llamadas a Nominatim."""
+    global _ultimo_nominatim
+    async with _nominatim_lock:
+        ahora = time.monotonic()
+        espera = NOMINATIM_INTERVALO_S - (ahora - _ultimo_nominatim)
+        if espera > 0:
+            await asyncio.sleep(espera)
+            ahora = time.monotonic()
+        _ultimo_nominatim = ahora
 
 ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-hgv"
 ORS_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
@@ -116,6 +139,7 @@ async def _geocodificar_nominatim(texto: str) -> list[list[float]]:
     Gratis y sin key, pero con límite estricto (~1 req/s) y solo como
     fallback, nunca como motor principal. España forzada con countrycodes.
     """
+    await _respetar_intervalo_nominatim()
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
             NOMINATIM_URL,

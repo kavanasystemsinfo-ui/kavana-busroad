@@ -246,3 +246,26 @@ def test_rate_limit_por_ip_devuelve_429(monkeypatch):
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r3.status_code == 429
+
+
+def test_nominatim_se_serializa_a_1s_entre_llamadas():
+    """El fallback Nominatim espacia >=1 s las llamadas (ToS ~1 req/s), así
+    hasta 20 paradas sin cuota ORS no autosabotean el fallback."""
+    import asyncio as _asyncio
+    import time as _time
+
+    # reset del reloj interno para no heredar esperas de otros tests
+    motor._ultimo_nominatim = 0.0
+    motor.NOMINATIM_INTERVALO_S = 1.0
+
+    async def _dos():
+        t0 = _time.monotonic()
+        await motor._respetar_intervalo_nominatim()  # 1ª: sin espera
+        t1 = _time.monotonic()
+        await motor._respetar_intervalo_nominatim()  # 2ª: debe esperar ~1s
+        t2 = _time.monotonic()
+        return t1 - t0, t2 - t1
+
+    primera, segunda = _asyncio.run(_dos())
+    assert primera < 0.5, f"la 1ª no debía esperar (tuvo {primera:.2f}s)"
+    assert segunda >= 0.9, f"la 2ª debió esperar ~1s (tuvo {segunda:.2f}s)"

@@ -433,6 +433,88 @@ const calcularRuta = async () => {
   }
 }
 
+// ---------- Sugerencias de geocodificación (confirmar punto antes de enrutar) ----------
+interface GeocodeCandidato {
+  label: string
+  lat: number
+  lon: number
+}
+// Candidatos visibles por campo: origen/destino/paradas. Al elegir uno se fija
+// el texto del campo (la dirección geocodificada real, p.ej. "Higueruelas,
+// Valencia, España" vs "Higueruela, Albacete") para no enrutar al sitio equivocado.
+const campoFoco = ref<'origen' | 'destino' | number | null>(null)
+const sugerencias = ref<GeocodeCandidato[]>([])
+const buscandoSugerencias = ref<null | 'origen' | 'destino' | number>(null)
+
+let geocodeTimer: number | undefined
+let geocodeSeq = 0 // para descartar respuestas fuera de orden
+
+const elegirCampoFoco = (campo: 'origen' | 'destino' | number | null) => {
+  campoFoco.value = campo
+  if (campo === null) { sugerencias.value = []; buscandoSugerencias.value = null; return }
+  // Aparece el dropdown y se busca al escribir; limpiar al cambiar de campo
+  sugerencias.value = []
+  buscandoSugerencias.value = null
+}
+
+const valorCampo = (campo: 'origen' | 'destino' | number): string => {
+  if (campo === 'origen') return origen.value
+  if (campo === 'destino') return destino.value
+  return paradas.value[campo] || ''
+}
+
+const setValorCampo = (campo: 'origen' | 'destino' | number, v: string) => {
+  if (campo === 'origen') origen.value = v
+  else if (campo === 'destino') destino.value = v
+  else if (paradas.value[campo] !== undefined) paradas.value[campo] = v
+}
+
+async function buscarSugerencias(campo: 'origen' | 'destino' | number) {
+  const texto = valorCampo(campo).trim()
+  window.clearTimeout(geocodeTimer)
+  if (texto.length < 3) { // mínimo 3 chars: no quemar ORS con tipeo a medias
+    if (campoFoco.value === campo) { sugerencias.value = []; buscandoSugerencias.value = null }
+    return
+  }
+  const seq = ++geocodeSeq
+  buscandoSugerencias.value = campo as 'origen' | 'destino' | number
+  geocodeTimer = window.setTimeout(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/v1/geocode?q=${encodeURIComponent(texto)}`)
+      if (!res.ok) throw new Error(`geocode ${res.status}`)
+      const data = await res.json()
+      if (seq !== geocodeSeq) return // respuesta antigua, descartar
+      if (campoFoco.value !== campo) return // el usuario cambió de campo
+      sugerencias.value = data.candidatos || []
+    } catch (e) {
+      if (seq === geocodeSeq) sugerencias.value = []
+    } finally {
+      if (seq === geocodeSeq && buscandoSugerencias.value === campo) {
+        buscandoSugerencias.value = null
+      }
+    }
+  }, 400)
+}
+
+const elegirSugerencia = (c: GeocodeCandidato) => {
+  if (campoFoco.value === null) return
+  setValorCampo(campoFoco.value, c.label)
+  sugerencias.value = []
+  campoFoco.value = null
+  buscandoSugerencias.value = null
+}
+
+const cerrarSugerencias = () => {
+  window.clearTimeout(geocodeTimer)
+  sugerencias.value = []
+  buscandoSugerencias.value = null
+}
+
+// Para @blur: esconder el dropdown tras 200 ms (deja tiempo al click en mousedown)
+const cerrarSugerenciasLuego = () => {
+  window.setTimeout(() => cerrarSugerencias(), 200)
+}
+
 // ---------- Gestión de paradas ----------
 const anadirParada = () => {
   paradas.value.push('')
@@ -466,41 +548,75 @@ const moverParada = (index: number, delta: number) => {
 
         <!-- Buscador origen/destino -->
         <div class="search-box">
-          <div class="search-row">
+          <div class="search-row" @click="elegirCampoFoco('origen')">
             <div class="search-icon-col">
               <span class="search-icon origen">🟢</span>
               <div class="search-line"></div>
             </div>
             <div class="search-field">
               <label>Origen</label>
-              <input v-model="origen" type="text" placeholder="Ej: Estació del Nord, Valencia" @keyup.enter="calcularRuta" />
+              <input v-model="origen" type="text" placeholder="Ej: Estació del Nord, Valencia"
+                @focus="elegirCampoFoco('origen')"
+                @input="buscarSugerencias('origen')"
+                @keyup.enter="calcularRuta"
+                @blur="cerrarSugerenciasLuego" />
             </div>
           </div>
-          <div class="search-row">
+          <div v-if="campoFoco === 'origen' && (sugerencias.length > 0 || buscandoSugerencias === 'origen')" class="geocode-drop">
+            <div v-if="buscandoSugerencias === 'origen'" class="geocode-hint">Buscando…</div>
+            <button v-for="c in sugerencias" :key="c.label + c.lat" class="geocode-item"
+              @mousedown.prevent="elegirSugerencia(c)">
+              <span class="geocode-pin">📍</span><span class="geocode-label">{{ c.label }}</span>
+            </button>
+          </div>
+
+          <div class="search-row" @click="elegirCampoFoco('destino')">
             <div class="search-icon-col">
               <span class="search-icon destino">📍</span>
             </div>
             <div class="search-field">
               <label>Destino</label>
-              <input v-model="destino" type="text" placeholder="Ej: Higueruelas, Valencia" @keyup.enter="calcularRuta" />
+              <input v-model="destino" type="text" placeholder="Ej: Higueruelas, Valencia"
+                @focus="elegirCampoFoco('destino')"
+                @input="buscarSugerencias('destino')"
+                @keyup.enter="calcularRuta"
+                @blur="cerrarSugerenciasLuego" />
             </div>
+          </div>
+          <div v-if="campoFoco === 'destino' && (sugerencias.length > 0 || buscandoSugerencias === 'destino')" class="geocode-drop">
+            <div v-if="buscandoSugerencias === 'destino'" class="geocode-hint">Buscando…</div>
+            <button v-for="c in sugerencias" :key="c.label + c.lat" class="geocode-item"
+              @mousedown.prevent="elegirSugerencia(c)">
+              <span class="geocode-pin">📍</span><span class="geocode-label">{{ c.label }}</span>
+            </button>
           </div>
 
           <!-- Paradas intermedias -->
-          <div v-for="(_, index) in paradas" :key="index" class="search-row parada-row">
+          <div v-for="(_, index) in paradas" :key="index" class="search-row parada-row" @click="elegirCampoFoco(index)">
             <div class="search-icon-col">
               <span class="search-icon parada">{{ index + 1 }}</span>
               <div class="search-line"></div>
             </div>
             <div class="search-field">
               <label>Parada {{ index + 1 }}</label>
-              <input v-model="paradas[index]" type="text" placeholder="Ej: CEIP Cervantes, Cheste" @keyup.enter="calcularRuta" />
+              <input v-model="paradas[index]" type="text" placeholder="Ej: CEIP Cervantes, Cheste"
+                @focus="elegirCampoFoco(index)"
+                @input="buscarSugerencias(index)"
+                @keyup.enter="calcularRuta"
+                @blur="cerrarSugerenciasLuego" />
             </div>
             <div class="parada-actions">
               <button class="parada-btn" title="Subir" :disabled="index === 0" @click="moverParada(index, -1)">↑</button>
               <button class="parada-btn" title="Bajar" :disabled="index === paradas.length - 1" @click="moverParada(index, 1)">↓</button>
               <button class="parada-btn danger" title="Eliminar" @click="eliminarParada(index)">✕</button>
             </div>
+          </div>
+          <div v-if="typeof campoFoco === 'number' && (sugerencias.length > 0 || buscandoSugerencias === campoFoco)" class="geocode-drop">
+            <div v-if="buscandoSugerencias === campoFoco" class="geocode-hint">Buscando…</div>
+            <button v-for="c in sugerencias" :key="c.label + c.lat" class="geocode-item"
+              @mousedown.prevent="elegirSugerencia(c)">
+              <span class="geocode-pin">📍</span><span class="geocode-label">{{ c.label }}</span>
+            </button>
           </div>
 
           <div class="parada-add-row">
@@ -1023,6 +1139,40 @@ input:focus, select:focus { border-color: var(--tema-primary); }
 .search-field input:focus { outline: none; }
 
 .search-field input::placeholder { color: #4b5563; }
+
+/* Dropdown de sugerencias de geocodificación (confirmar punto antes de enrutar) */
+.geocode-drop {
+  background: #1a1d27;
+  border: 1px solid #2a2e3a;
+  border-radius: 10px;
+  margin: 2px 0 10px 40px;
+  overflow: hidden;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.geocode-drop .geocode-hint {
+  padding: 10px 14px;
+  font-size: 0.8em;
+  color: #6b7280;
+}
+.geocode-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid #222a3d;
+  color: #e5e7eb;
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.geocode-item:first-child { border-top: none; }
+.geocode-item:hover { background: var(--tema-glow); }
+.geocode-pin { font-size: 0.95em; flex-shrink: 0; }
+.geocode-label { line-height: 1.3; }
 
 /* Paradas intermedias */
 .search-icon.parada {

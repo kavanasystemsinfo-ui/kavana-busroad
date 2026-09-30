@@ -269,3 +269,74 @@ def test_nominatim_se_serializa_a_1s_entre_llamadas():
     primera, segunda = _asyncio.run(_dos())
     assert primera < 0.5, f"la 1ª no debía esperar (tuvo {primera:.2f}s)"
     assert segunda >= 0.9, f"la 2ª debió esperar ~1s (tuvo {segunda:.2f}s)"
+
+
+# --------------------------------------------------- sugerencias de geocodificación
+def test_geocode_expone_candidatos_con_nombre(monkeypatch):
+    """El endpoint /geocode devuelve candidatos {label,lat,lon} para elegir el punto correcto
+    antes de enrutar (fallo peor para un conductor: ruta al sitio equivocado)."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    async def fake_candidatos(key, texto):
+        return [
+            {"label": "Higueruelas, Valencia, España", "lat": 39.7543, "lon": -0.9181},
+            {"label": "Higueruela, Albacete, España", "lat": 38.9646, "lon": -1.4460},
+        ]
+
+    monkeypatch.setenv("ORS_API_KEY", "test-key")
+    # _geocode_ors es el helper que consulta a ORS; lo sustituimos por el fake
+    monkeypatch.setattr(motor, "_geocode_ors", fake_candidatos)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    client = TestClient(app)
+    r = client.get("/api/v1/geocode", params={"q": "Higueruela"})
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["candidatos"]) == 2
+    assert data["candidatos"][0]["label"].startswith("Higueruelas")
+    assert abs(data["candidatos"][0]["lat"] - 39.75) < 0.01
+
+
+def test_geocode_prioriza_ors_y_cachea(monkeypatch):
+    """El 2º request del mismo texto sale de caché (reusa el store, sin re-consultar ORS)."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    llamadas = {"n": 0}
+
+    async def fake_candidatos(key, texto):
+        llamadas["n"] += 1
+        return [{"label": "Paterna, Valencia, España", "lat": 39.5028, "lon": -0.4406}]
+
+    monkeypatch.setenv("ORS_API_KEY", "test-key")
+    monkeypatch.setattr(motor, "_geocode_ors", fake_candidatos)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    client = TestClient(app)
+    r1 = client.get("/api/v1/geocode", params={"q": "Paterna"})
+    r2 = client.get("/api/v1/geocode", params={"q": "Paterna"})
+    assert r1.status_code == r2.status_code == 200
+    assert llamadas["n"] == 1, "el 2º request debió salir de caché sin re-consultar ORS"
+
+
+def test_geocode_sin_ors_respalda_con_nominatim(monkeypatch):
+    """Sin ORS_API_KEY (o sin cuota), el respaldo es Nominatim, y honesto: si ambos
+    fallan devuelve lista vacía, no candidatos inventados."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    async def fake_nominatim(texto):
+        return [{"label": "Cheste, Valencia, España", "lat": 39.4952, "lon": -0.6826}]
+
+    # sin ORS_API_KEY en env → va a Nominatim
+    monkeypatch.delenv("ORS_API_KEY", raising=False)
+    monkeypatch.setattr(motor, "_geocode_nominatim", fake_nominatim)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    client = TestClient(app)
+    r = client.get("/api/v1/geocode", params={"q": "Cheste"})
+    assert r.status_code == 200
+    assert r.json()["candidatos"] == [
+        {"label": "Cheste, Valencia, España", "lat": 39.4952, "lon": -0.6826}
+    ]

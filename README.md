@@ -187,6 +187,7 @@ Endpoints principales:
 |--------|------|-------------|
 | GET | `/api/v1/health` | Estado y motor activo |
 | POST | `/api/v1/ruta` | Calcula ruta segura + convencional dado origen, destino, paradas opcionales (`paradas[]`, hasta 20), optimización de orden (`optimizar`) y dimensiones del vehículo |
+| GET | `/api/v1/geocode?q=` | Sugerencias de geocodificación `{label, lat, lon}` para confirmar el punto correcto antes de enrutar (evita la ruta al sitio equivocado, p.ej. Higueruelas vs Higueruela) |
 
 Payload de ejemplo:
 

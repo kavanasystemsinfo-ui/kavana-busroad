@@ -111,12 +111,12 @@ class RutaResponse(BaseModel):
 
 
 # ------------------------------------------------------------------ helpers
-async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
-    """Convierte una dirección en candidatos [lng, lat] con ORS.
+async def _geocode_ors(api_key: str, texto: str) -> list[dict]:
+    """Busca una dirección en ORS y devuelve candidatos con label + coordenadas.
 
-    Fuerza España (boundary.country=ESP) para que "Higueruelas" no
-    resuelva a "Higueruela" (Albacete), y devuelve varios candidatos
-    por si el primero no es enrutable.
+    Fuerza España (boundary.country=ESP) para que Higueruelas no resuelva a
+    Higueruela (Albacete) y devuelve varios candidatos con su nombre para que
+    el usuario confirme cuál es antes de enrutar.
     """
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
@@ -126,18 +126,24 @@ async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
         )
     if r.status_code != 200:
         return []
-    return [
-        f["geometry"]["coordinates"]
-        for f in r.json().get("features", [])
-        if f.get("geometry", {}).get("coordinates")
-    ]
+    candidatos = []
+    for f in r.json().get("features", []):
+        g = f.get("geometry", {})
+        coords = g.get("coordinates")
+        if not coords:
+            continue
+        props = f.get("properties", {})
+        candidatos.append(
+            {"label": props.get("label", texto), "lat": coords[1], "lon": coords[0]}
+        )
+    return candidatos
 
 
-async def _geocodificar_nominatim(texto: str) -> list[list[float]]:
+async def _geocode_nominatim(texto: str) -> list[dict]:
     """Respaldo con Nominatim (OpenStreetMap) cuando ORS falla (cuota, caída).
 
-    Gratis y sin key, pero con límite estricto (~1 req/s) y solo como
-    fallback, nunca como motor principal. España forzada con countrycodes.
+    Gratis y sin key, pero con límite estricto (~1 req/s, serializado con
+    _respetar_intervalo_nominatim) y solo como fallback. España forzada.
     """
     await _respetar_intervalo_nominatim()
     async with httpx.AsyncClient(timeout=20) as client:
@@ -153,14 +159,25 @@ async def _geocodificar_nominatim(texto: str) -> list[list[float]]:
         )
     if r.status_code != 200:
         return []
-    try:
-        return [
-            [float(f["lon"]), float(f["lat"])]
-            for f in r.json()
-            if f.get("lat") and f.get("lon")
-        ]
-    except (ValueError, TypeError):
-        return []
+    candidatos = []
+    for f in r.json():
+        try:
+            lon = float(f["lon"])
+            lat = float(f["lat"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        candidatos.append({"label": f.get("display_name", texto), "lat": lat, "lon": lon})
+    return candidatos
+
+
+async def _geocodificar_ors(api_key: str, texto: str) -> list[list[float]]:
+    """Convierte una dirección en candidatos [lng, lat] con ORS (compat)."""
+    return [[c["lon"], c["lat"]] for c in await _geocode_ors(api_key, texto)]
+
+
+async def _geocodificar_nominatim(texto: str) -> list[list[float]]:
+    """Respaldo Nominatim devolviendo solo [lng, lat] (compat). Respeta ~1 req/s."""
+    return [[c["lon"], c["lat"]] for c in await _geocode_nominatim(texto)]
 
 
 async def _geocodificar(api_key: str, texto: str) -> list[list[float]]:
@@ -417,6 +434,55 @@ def _mock(req: RutaRequest) -> RutaResponse:
 
 
 # ------------------------------------------------------------------- rutas
+# Modelo de sugerencia de geocodificación: para que el usuario confirme el
+# punto correcto ANTES de enrutar (fallo peor para un conductor: ruta al sitio
+# equivocado). El backend ya resolvía candidatos internamente; ahora los expone.
+class GeocodeCandidato(BaseModel):
+    label: str
+    lat: float
+    lon: float
+
+
+class GeocodeResponse(BaseModel):
+    candidatos: list[GeocodeCandidato]
+
+
+TTL_GEOCODE_SUGERENCIAS_S = 24 * 3600
+
+
+async def _sugerencias_geocode(api_key: str, texto: str) -> list[dict]:
+    """Candidatos con nombre para confirmar un punto antes de enrutar.
+
+    ORS primero (mejor calidad en España); si está sin cuota o no encuentra,
+    Nominatim como respaldo. Cacheado en el store por texto normalizado.
+    """
+    clave = " ".join(texto.strip().lower().split())
+    if not clave:
+        return []
+    cacheado = store.cache_get("geocode_sugerencias", clave, TTL_GEOCODE_SUGERENCIAS_S)
+    if cacheado is not None:
+        return cacheado
+    candidatos = []
+    if api_key:
+        candidatos = await _geocode_ors(api_key, texto)
+    if not candidatos:
+        candidatos = await _geocode_nominatim(texto)
+    if candidatos:
+        store.cache_set("geocode_sugerencias", clave, candidatos)
+    return candidatos
+
+
+@router.get("/geocode", response_model=GeocodeResponse)
+async def geocode_sugerencias(q: str):
+    """Exponer los candidatos geocodificados para que el usuario confirme el
+    punto antes de enrutar. Sin candidatos → lista vacía (honesto, no inventa).
+    """
+    ors_key = os.environ.get("ORS_API_KEY", "").strip()
+    texto = q.strip() if q else ""
+    candidatos = await _sugerencias_geocode(ors_key, texto)
+    return GeocodeResponse(candidatos=candidatos)
+
+
 def _clave_cache_ruta(req: RutaRequest) -> str:
     """Clave canónica de una ruta: hash de origen/destino/paradas/optimizar/dimensiones.
 

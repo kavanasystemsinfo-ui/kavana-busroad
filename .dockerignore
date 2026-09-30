@@ -1,0 +1,12 @@
+# Mantener el build context pequeño (fly deploy sube este directorio)
+.git/
+.venv/
+__pycache__/
+*.pyc
+store.json
+
+# No necesarios para la imagen del backend
+frontend/
+k8s/
+.github/
+*.md.bak

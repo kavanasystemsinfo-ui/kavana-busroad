@@ -29,6 +29,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "https://busroad.kavanasystems.com",
+        "https://busroad-api.kavanasystems.com",
+        "https://busroad-api.fly.dev",
         "https://www.kavanasystems.com",
         "https://kavana-busroad.vercel.app",
         "https://frontend-605yf47nv-vistaprods-projects.vercel.app",
@@ -95,3 +97,21 @@ def health():
     elif os.environ.get("GOOGLE_API_KEY"):
         motor = "google-routes"
     return {"status": "ok", "motor": motor}
+
+
+# ---------------------------------------------------------------- PWA estática
+# Desde 2026-09-30 el backend sirve también la PWA (build de /frontend) para
+# que todo el producto viva en Fly y no dependa de Vercel. StaticFiles se monta
+# en "/" DESPUÉS de definir las rutas /api/v1, que así tienen prioridad por
+# orden de matcheo de Starlette; html=True sirve index.html como fallback de
+# SPA. En desarrollo sin dist/ se ignora (tests siguen solo-API).
+import os
+from pathlib import Path
+
+from fastapi.staticfiles import StaticFiles
+
+_STATIC_DIR = Path(os.getenv("BUSROAD_STATIC_DIR", "/app/static"))
+if _STATIC_DIR.is_dir() and (_STATIC_DIR / "index.html").exists():
+    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="pwa")
+else:
+    print("[PWA] dist no encontrado en", _STATIC_DIR, "— sirviendo solo la API")

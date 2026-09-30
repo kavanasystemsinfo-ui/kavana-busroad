@@ -90,10 +90,17 @@ def cargar_corpus() -> list[dict]:
 
 
 def _leer_contexto_base() -> str:
+    """README completo como contexto base.
+
+    Truncar a 8.000 chars dejaba fuera la mitad del README real (20.776), y el
+    asistente respondía "no está documentado" a hechos que sí estaban (tests,
+    CI; visto en producción 2026-09-30). El límite de tokens lo pone el modelo
+    (max_tokens de salida 900; el contexto cabe de sobra en la ventana).
+    """
     abs_path = REPO_ROOT / "README.md"
     if not abs_path.exists():
         return ""
-    return abs_path.read_text(encoding="utf-8", errors="replace")[:8000]
+    return abs_path.read_text(encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------- TF-IDF

@@ -39,6 +39,33 @@ def _indice_test():
     return assistant.construir_indice(assistant.cargar_corpus())
 
 
+def test_contexto_base_no_trunca_el_readme_a_medias():
+    """El README real tiene >9.000 chars y los hechos clave (tests, CI) viven
+    mas alla del char 8.000. Si el contexto base se trunca a 8.000, el
+    asistente responde 'no esta documentado' a cosas que SI estan en el
+    README (visto en produccion 2026-09-30). El contexto base debe cubrir el
+    README completo."""
+    import importlib
+
+    from pathlib import Path as P
+
+    tmp = P("/tmp/busroad_corpus_base_test")
+    tmp.mkdir(parents=True, exist_ok=True)
+    relleno = "Seccion de relleno del README. " * 600  # ~14.400 chars
+    (tmp / "README.md").write_text(
+        "# Kavana BusRoad\n\n" + relleno + "\n\nEl backend tiene 36 tests y CI en cada push.\n"
+    )
+    prev = os.environ.get("BUSROAD_DOCS_ROOT")
+    os.environ["BUSROAD_DOCS_ROOT"] = str(tmp)
+    importlib.reload(assistant)
+    if prev is None:
+        os.environ.pop("BUSROAD_DOCS_ROOT", None)
+    else:
+        os.environ["BUSROAD_DOCS_ROOT"] = prev
+    contexto = assistant._leer_contexto_base()
+    assert "36 tests y CI en cada push" in contexto
+
+
 def test_corpus_excluye_plantillas():
     idx = _indice_test()
     fuentes = {c["fuente"] for c in idx["chunks"]}

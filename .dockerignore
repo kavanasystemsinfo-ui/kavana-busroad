@@ -1,12 +1,16 @@
-# Mantener el build context pequeño (fly deploy sube este directorio)
+# Mantener el build context pequeño (fly deploy sube este directorio).
 .git/
 .venv/
 __pycache__/
 *.pyc
 store.json
 
-# No necesarios para la imagen del backend
-frontend/
+# NO excluir frontend/ entero: el Dockerfile multi-stage lo construye (npm ci
+# + vite build). Excluir solo lo pesado del host que ensucia el contexto.
+frontend/node_modules/
+frontend/dist/
+frontend/.vercel
+
 k8s/
 .github/
 *.md.bak

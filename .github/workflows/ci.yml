@@ -16,7 +16,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Instalar dependencias
-        run: pip install -r backend/requirements.txt pytest
+        # pytest-asyncio: los tests del asistente prueban funciones async
+        # (reintento ante respuesta vacía del LLM). Igual que pytest, es
+        # dependencia del CI, no de requirements.txt (ADR 007).
+        run: pip install -r backend/requirements.txt pytest pytest-asyncio
       - name: Tests del backend (pytest)
         working-directory: backend
         run: python -m pytest -v

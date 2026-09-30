@@ -53,6 +53,20 @@ resultado muestra siempre ambas rutas, en el mapa y en tarjetas:
 - Cada tarjeta tiene su botón de navegación (la segura con waypoints del
   ADR 003; la estándar abre Google Maps sin waypoints).
 
+## Actualización 2026-09-30 (texto honesto en el caso "coinciden")
+
+La Decisión de arriba aprobó el texto *"Coinciden: no hay obstáculos para tu
+vehículo"*. En la fase de producto del 2026-09-30 se cambió a una versión más
+ajustada: *"La ruta de coche mide lo mismo, así que en este trayecto no hay que
+desviarse por las dimensiones del vehículo"*.
+
+Motivo: el motor de rutas no devuelve la lista de puntos que ha evitado (la
+lista `riesgos` solo la rellena el modo de ejemplo), así que "no hay obstáculos"
+afirmaba más de lo que el sistema comprueba. Lo que sí se sabe es que las dos
+rutas miden lo mismo, y eso es lo que ahora se dice. El resto del ADR sigue
+vigente; el sello "✓ Calculado con las restricciones" también se oculta si la
+ruta viene del modo de ejemplo, para no presentar una ruta simulada como real.
+
 ## Consecuencias
 
 **Positivas**
@@ -62,8 +76,8 @@ resultado muestra siempre ambas rutas, en el mapa y en tarjetas:
   documentación.
 - La comparación es demostrable: un reclutador o arquitecto ve en 5 segundos
   la propuesta de valor de BusRoad.
-- El caso "coinciden" comunica confianza: no hay obstáculos, la ruta segura y
-  la de coche son la misma.
+- El caso "coinciden" comunica confianza: la ruta segura y la de coche son la
+  misma.
 - Un coste de backend mínimo: ORS ya calcula ambas rutas en una petición.
 
 **Negativas / límites**

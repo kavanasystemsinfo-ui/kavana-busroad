@@ -1,0 +1,22 @@
+name: CI
+
+# CI mínimo (ADR 007): pytest en cada push. Sin matrices ni servicios: el
+# backend no toca BD ni red en tests (los externos van con monkeypatch).
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias
+        run: pip install -r backend/requirements.txt pytest
+      - name: Tests del backend (pytest)
+        working-directory: backend
+        run: python -m pytest -v

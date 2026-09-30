@@ -23,7 +23,10 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# CORS: la PWA (Vercel) y el desarrollo local pueden llamar a la API
+# CORS: la PWA se sirve desde esta misma app (mismo origen, no necesita CORS);
+# la lista cubre el desarrollo local, los hostnames de Fly y los orígenes de
+# Vercel heredados (se dejan por si alguien usa una URL antigua; el despliegue
+# real ya no pasa por Vercel, ver ADR 008).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

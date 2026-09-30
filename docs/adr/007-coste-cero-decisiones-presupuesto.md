@@ -28,9 +28,11 @@ cada límite aceptado queda escrito:
 - **Backend:** Fly.io en plan hobby: una sola app (`busroad-api`), una región
   (`cdg`), VM de `256mb` / `1` CPU compartida, `auto_stop_machines = "stop"` y
   `min_machines_running = 0` (`fly.toml`, ver ADR 005).
-- **Frontend y DNS:** PWA Vue 3 en el plan gratuito de Vercel; registros
-  A/AAAA/`_acme-challenge` de `busroad-api.kavanasystems.com` mantenidos a mano
-  en Namecheap con certificados Let's Encrypt emitidos por Fly/Vercel.
+- **Frontend y DNS:** la PWA se sirve desde la **misma app de Fly** que la API
+  (superado el 2026-09-30: antes vivía en el plan gratuito de Vercel, ver ADR
+  008); registros A/`_acme-challenge` de `busroad.kavanasystems.com` y
+  `busroad-api.kavanasystems.com` mantenidos a mano en Namecheap con
+  certificados Let's Encrypt emitidos por Fly.
 - **Sin base de datos ni autenticación:** vehículos, favoritos, configuración y
   borrador de ruta viven en `localStorage` del navegador (`frontend/src/App.vue`).
 - **API abierta:** `/api/v1/ruta` y el asistente no piden credenciales. La única
@@ -39,9 +41,10 @@ cada límite aceptado queda escrito:
   `backend/app/main.py`.
 - **Asistente RAG:** TF-IDF en memoria sobre README y ADRs, con modelo `:free` de
   OpenRouter por defecto (`ASSISTANT_MODEL_FREE` / `MODELO_PRO`).
-- **Sin CI/CD ni staging:** los tests de `backend/tests/` se ejecutan a mano
-  (pytest no está en `backend/requirements.txt`), el backend se despliega con
-  `flyctl deploy` y el frontend lo despliega Vercel al hacer push.
+- **CI mínimo, sin staging:** desde el 2026-09-30 los tests de `backend/tests/`
+  corren en GitHub Actions en cada push y PR (`.github/workflows/ci.yml`, con
+  pytest instalado en el CI y no en `backend/requirements.txt`); la PWA y el
+  backend se despliegan con un solo `flyctl deploy`. Sigue sin haber staging.
 
 ## Alternativas evaluadas
 
@@ -59,7 +62,7 @@ cada límite aceptado queda escrito:
 **Positivas**
 
 - Coste ~0 €/mes: todas las piezas caben en planes gratuitos (ORS, Fly.io
-  hobby, Vercel, Nominatim, tiles de OSM).
+  hobby, Nominatim, tiles de OSM).
 - Cero datos personales en el servidor: al no haber cuentas ni base de datos, no
   hay nada que proteger ni que borrar a petición de un usuario.
 - Los límites son verificables en el propio repo (`fly.toml`,
@@ -129,5 +132,5 @@ Revisar este ADR cuando ocurra cualquiera de estas cosas:
    y CI/CD antes de que alguien dependa de ello.
 4. **El asistente deja de ser demo de portafolio**: toca modelo de pago e
    índice persistente en lugar de TF-IDF en memoria.
-5. **Cambian las IPs de Fly** o el plan de Vercel: revisar si el DNS manual en
-   Namecheap sigue siendo aceptable o hay que automatizarlo.
+5. **Cambian las IPs de Fly** (o se añade CDN delante de la PWA): revisar si el
+   DNS manual en Namecheap sigue siendo aceptable o hay que automatizarlo.

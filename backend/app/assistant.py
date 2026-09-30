@@ -21,7 +21,9 @@ from .store import Store
 
 logger = logging.getLogger(__name__)
 
-# Local: raíz del repo. Producción: /docs (Dockerfile puede copiarlo allí).
+# Local: raíz del repo (backend/app/assistant.py → parents[2]).
+# Producción: fly.toml fija BUSROAD_DOCS_ROOT=/app, donde el Dockerfile copia
+# README.md y docs/ (sin esa variable parents[2] sería "/" en la imagen).
 REPO_ROOT = Path(os.getenv("BUSROAD_DOCS_ROOT") or Path(__file__).resolve().parents[2])
 
 MODELO_FREE = os.getenv("ASSISTANT_MODEL_FREE", "nvidia/nemotron-3-super-120b-a12b:free")
@@ -188,8 +190,9 @@ _PERSONA_TECH = [
     "Eres el asistente técnico de KAVANA BusRoad, un servicio de rutas para",
     "vehículos grandes con restricciones de dimensiones (autobuses, furgonetas,",
     "grúas): evita puentes, túneles y calles donde no cabe el vehículo.",
-    "Backend FastAPI (OpenRouteService driving-hgv), frontend Vue 3, desplegado",
-    "en Fly.io + Vercel. Un RECLUTADOR TÉCNICO te entrevista sobre el proyecto.",
+    "Backend FastAPI (OpenRouteService driving-hgv), frontend Vue 3, servido",
+    "todo desde Fly.io (el backend sirve la PWA). Un RECLUTADOR TÉCNICO te",
+    "entrevista sobre el proyecto.",
     "Responde con precisión de ingeniero: arquitectura, decisiones (ADRs),",
     "tests, y limitaciones reconocidas. Si una limitación fue aceptada y",
     "documentada, dilo abiertamente: conocer las fronteras del sistema es una",

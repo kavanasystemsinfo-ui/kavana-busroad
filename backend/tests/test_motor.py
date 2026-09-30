@@ -340,3 +340,119 @@ def test_geocode_sin_ors_respalda_con_nominatim(monkeypatch):
     assert r.json()["candidatos"] == [
         {"label": "Cheste, Valencia, España", "lat": 39.4952, "lon": -0.6826}
     ]
+
+
+# ------------------------------------------- errores que el usuario puede leer
+# Jorge (2026-09-30): en producción la app enseñaba "Error 422: ... respondió
+# 404" en bruto. Un fallo del motor tiene que llegar con un motivo en español y
+# su status correcto (503 si el motor no responde, 422 si la dirección no existe).
+class _RespuestaFalsa:
+    def __init__(self, status_code: int, text: str = ""):
+        self.status_code = status_code
+        self.text = text
+
+
+class _ClienteFalso:
+    """Cliente httpx mínimo: solo lo que usan los helpers de ORS."""
+
+    def __init__(self, respuesta):
+        self._respuesta = respuesta
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, **kwargs):
+        return self._respuesta
+
+
+def test_error_ors_traduce_los_codigos_a_motivos_en_espanol():
+    """Cada código que afecta al usuario tiene su propio mensaje, sin códigos
+    ni JSON crudo (el conductor no puede hacer nada con "respondió 404")."""
+    assert motor._error_ors(404).status_code == 422
+    assert "dirección" in motor._error_ors(404).detalle
+    assert motor._error_ors(429).status_code == 429
+    assert motor._error_ors(500).status_code == 503
+    assert motor._error_ors(503).status_code == 503
+    assert motor._error_ors(401).status_code == 503
+    for codigo in (400, 401, 404, 429, 500, 503):
+        detalle = motor._error_ors(codigo).detalle
+        assert "{" not in detalle and "}" not in detalle
+        assert str(codigo) not in detalle
+
+
+def test_pedir_ruta_ors_no_filtra_el_json_de_ors(monkeypatch):
+    """Con cuota agotada, _pedir_ruta_ors lanza ErrorMotorRutas ya en español."""
+    cliente = _ClienteFalso(_RespuestaFalsa(429, '{"error":{"code":2010}}'))
+    monkeypatch.setattr(motor.httpx, "AsyncClient", lambda **k: cliente)
+
+    with pytest.raises(motor.ErrorMotorRutas) as exc:
+        asyncio.run(motor._pedir_ruta_ors("key", [[0, 0], [1, 1]], "driving-hgv", None))
+
+    assert exc.value.status_code == 429
+    assert "saturado" in exc.value.detalle.lower()
+    assert "{" not in exc.value.detalle
+
+
+def test_optimizar_paradas_no_filtra_el_json_de_ors(monkeypatch):
+    """El fallo de VROOM tampoco expone el cuerpo crudo de ORS."""
+    cliente = _ClienteFalso(_RespuestaFalsa(503, "<html>gateway</html>"))
+    monkeypatch.setattr(motor.httpx, "AsyncClient", lambda **k: cliente)
+
+    with pytest.raises(motor.ErrorMotorRutas) as exc:
+        asyncio.run(motor._optimizar_paradas_ors("key", [[0, 0], [1, 1], [2, 2], [3, 3]]))
+
+    assert exc.value.status_code == 503
+    assert "<html>" not in exc.value.detalle
+
+
+def _body_ruta(destino="Cheste"):
+    return {
+        "origen": "Valencia",
+        "destino": destino,
+        "paradas": [],
+        "optimizar": False,
+        "vehiculo": {"alto_m": 3.0, "ancho_m": 2.5, "largo_m": 10.0, "peso_kg": 12000},
+    }
+
+
+def test_endpoint_ruta_usa_el_status_del_motor_y_manda_mensaje_claro(monkeypatch):
+    """Caída del motor: 503 con motivo en español, no un 422 con el error crudo."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    async def fake_calcular(key, req):
+        raise motor._error_ors(503)
+
+    monkeypatch.setattr(motor, "_calcular_ors", fake_calcular)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    monkeypatch.setenv("ORS_API_KEY", "test-key")
+
+    r = TestClient(app).post("/api/v1/ruta", json=_body_ruta())
+    assert r.status_code == 503
+    detalle = r.json()["detail"]
+    assert "no responde" in detalle.lower()
+    assert "OpenRouteService" not in detalle
+
+
+def test_endpoint_ruta_direccion_no_encontrada_da_422_legible(monkeypatch):
+    """Dirección no localizada: 422 con un motivo que se entiende."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    async def fake_calcular(key, req):
+        raise ValueError(
+            "No pude localizar origen o destino. Añade la ciudad o el código postal y vuelve a intentarlo."
+        )
+
+    monkeypatch.setattr(motor, "_calcular_ors", fake_calcular)
+    monkeypatch.setattr("app.motor.store", motor.store)
+    monkeypatch.setenv("ORS_API_KEY", "test-key")
+
+    r = TestClient(app).post("/api/v1/ruta", json=_body_ruta(destino="Riba-roja"))
+    assert r.status_code == 422
+    assert "localizar" in r.json()["detail"]

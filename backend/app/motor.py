@@ -16,6 +16,7 @@ Sin claves responde con una ruta de ejemplo (mock).
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import time
 
@@ -27,6 +28,56 @@ from pydantic import BaseModel, Field
 from .store import Store
 
 router = APIRouter(prefix="/api/v1", tags=["ruta"])
+
+logger = logging.getLogger(__name__)
+
+
+class ErrorMotorRutas(ValueError):
+    """Fallo del motor con un motivo que el usuario puede leer.
+
+    Hereda de ValueError para no alterar los `except ValueError` del flujo de
+    candidatos, pero lleva su propio status HTTP: así el endpoint responde 503
+    cuando el motor no está y 422 cuando la dirección no se localiza, en vez de
+    un 422 con el JSON crudo de ORS.
+    """
+
+    def __init__(self, detalle: str, status_code: int = 422):
+        super().__init__(detalle)
+        self.detalle = detalle
+        self.status_code = status_code
+
+
+def _error_ors(status: int) -> ErrorMotorRutas:
+    """Traduce el status que devuelve ORS a un motivo comprensible."""
+    if status in (401, 403):
+        return ErrorMotorRutas(
+            "El motor de rutas ha rechazado la clave de acceso. Avisa al administrador.",
+            503,
+        )
+    if status == 429:
+        return ErrorMotorRutas(
+            "El motor de rutas está saturado ahora mismo. Espera unos segundos y vuelve a intentarlo.",
+            429,
+        )
+    if status == 404:
+        return ErrorMotorRutas(
+            "No encuentro esa dirección. Añade la ciudad o el código postal.", 422
+        )
+    if status >= 500:
+        return ErrorMotorRutas(
+            "El motor de rutas no responde ahora mismo. Inténtalo en unos segundos.", 503
+        )
+    return ErrorMotorRutas(
+        "No he podido calcular esa ruta. Revisa el origen y el destino e inténtalo otra vez.",
+        422,
+    )
+
+
+def _http_exception(e: Exception) -> HTTPException:
+    """Respuesta HTTP de un fallo del motor (con su status propio si lo trae)."""
+    if isinstance(e, ErrorMotorRutas):
+        return HTTPException(status_code=e.status_code, detail=e.detalle)
+    return HTTPException(status_code=422, detail=str(e))
 
 # store compartido (cache + contadores). Los tests lo reemplazan por un Store
 # apuntando a un fichero temporal.
@@ -222,7 +273,8 @@ async def _pedir_ruta_ors(
             headers={"Authorization": api_key, "Content-Type": "application/json"},
         )
     if r.status_code != 200:
-        raise ValueError(f"OpenRouteService ({perfil}) respondió {r.status_code}: {r.text[:120]}")
+        logger.warning("ORS (%s) respondió %s: %s", perfil, r.status_code, r.text[:200])
+        raise _error_ors(r.status_code)
     route = r.json().get("routes", [{}])[0]
     summary = route.get("summary", {})
     pasos = []
@@ -272,7 +324,8 @@ async def _optimizar_paradas_ors(api_key: str, coords: list) -> tuple[list, list
             headers={"Authorization": api_key, "Content-Type": "application/json"},
         )
     if r.status_code != 200:
-        raise ValueError(f"Optimización ORS respondió {r.status_code}: {r.text[:120]}")
+        logger.warning("Optimización ORS respondió %s: %s", r.status_code, r.text[:200])
+        raise _error_ors(r.status_code)
     data = r.json()
     routes = data.get("routes", [])
     if not routes:
@@ -301,14 +354,16 @@ async def _calcular_ors(api_key: str, req: RutaRequest) -> RutaResponse:
     origenes = await _geocodificar(api_key, req.origen)
     destinos = await _geocodificar(api_key, req.destino)
     if not origenes or not destinos:
-        raise ValueError("No pude localizar origen o destino. Prueba con nombres más exactos.")
+        raise ValueError(
+            "No pude localizar origen o destino. Añade la ciudad o el código postal y vuelve a intentarlo."
+        )
 
     # Geocodificar paradas intermedias (cada una con sus candidatos)
     paradas_candidatas: list[list] = []
     for p in req.paradas:
         cands = await _geocodificar(api_key, p)
         if not cands:
-            raise ValueError(f"No pude localizar la parada: {p}")
+            raise ValueError(f"No pude localizar la parada «{p}». Añade la ciudad o el código postal.")
         paradas_candidatas.append(cands)
 
     v = req.vehiculo
@@ -387,7 +442,8 @@ async def _calcular_google(api_key: str, req: RutaRequest) -> RutaResponse:
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(GOOGLE_ROUTES_URL, json=payload, headers=headers)
     if r.status_code != 200:
-        raise ValueError(f"Google Routes respondió {r.status_code}: {r.text[:300]}")
+        logger.warning("Google Routes respondió %s: %s", r.status_code, r.text[:200])
+        raise _error_ors(r.status_code)
 
     route = r.json().get("routes", [{}])[0]
     pasos = []
@@ -526,14 +582,14 @@ async def calcular_ruta(req: RutaRequest, request: Request):
             )
         try:
             resp = await _calcular_ors(ors_key, req)
-        except ValueError as e:
-            # Log del body para diagnosticar fallos reales de geocodificación
+        except (ErrorMotorRutas, ValueError) as e:
+            # El detalle crudo de ORS queda en el log; al usuario le llega el
+            # motivo en español con el status correcto (503, 429 o 422).
             print(
-                f"[DIAG] 422 ruta fallida | origen={req.origen!r} destino={req.destino!r} "
+                f"[DIAG] ruta fallida | origen={req.origen!r} destino={req.destino!r} "
                 f"paradas={req.paradas!r} optimizar={req.optimizar} | {e}"
             )
-            # Sin claves no hay nada que devolver; con claves, el error es real
-            raise HTTPException(status_code=422, detail=str(e))
+            raise _http_exception(e)
         # Solo se cuenta ni se cachea lo que salió bien (miss auténtico)
         store.counter_incr("contador_ruta", clave_ip, TTL_CONTADOR_S)
         store.cache_set("cache_rutas", clave, resp.model_dump())
@@ -543,8 +599,8 @@ async def calcular_ruta(req: RutaRequest, request: Request):
     if google_key:
         try:
             return await _calcular_google(google_key, req)
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+        except (ErrorMotorRutas, ValueError) as e:
+            raise _http_exception(e)
 
     # 3. Sin claves: mock para desarrollo
     return _mock(req)

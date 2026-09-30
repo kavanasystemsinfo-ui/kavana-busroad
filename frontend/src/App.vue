@@ -46,6 +46,7 @@ const optimizar = ref(false)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const result = ref<RutaResponse | null>(null)
+const avisoArranque = ref(false)
 
 const dimensiones = ref({
   largo_m: 12.0,
@@ -105,6 +106,43 @@ const TEMAS: Record<Config['tema'], { nombre: string; primary: string; primary2:
 // ---------- API ----------
 const API_URL = import.meta.env.VITE_API_URL || 'https://busroad-api.kavanasystems.com'
 
+// ---------- Errores legibles y arranque en frío ----------
+// Regla: el usuario nunca ve códigos HTTP ni JSON crudo. El backend manda un
+// motivo en español (`detail` en los fallos del motor, `error` en el límite
+// diario) y aquí se usa tal cual; si no viene, hay un texto de respaldo por tipo.
+const MENSAJE_SIN_CONEXION = 'No he podido conectar con el servidor. Comprueba tu conexión e inténtalo otra vez.'
+const MENSAJE_ARRANQUE = 'El servidor estaba dormido y se está despertando: el primer cálculo puede tardar unos segundos.'
+const MENSAJE_ARRANQUE_LENTO = 'El servidor ha tardado demasiado en despertarse. Vuelve a intentarlo.'
+const MS_AVISO_ARRANQUE = 2500
+
+function motivoEnEspanol(status: number, cuerpo: string): string {
+  let detalle = ''
+  try {
+    const j = JSON.parse(cuerpo)
+    if (typeof j?.detail === 'string') detalle = j.detail
+    else if (typeof j?.error === 'string') detalle = j.error
+  } catch {
+    detalle = ''
+  }
+  if (detalle) return detalle
+  if (status === 429) return 'Has pedido demasiadas rutas seguidas. Espera un momento y vuelve a intentarlo.'
+  if (status === 422) return 'No he podido calcular esa ruta. Revisa el origen y el destino e inténtalo otra vez.'
+  if (status === 502 || status === 503 || status === 504) {
+    return 'El motor de rutas no responde ahora mismo. Inténtalo en unos segundos.'
+  }
+  return 'Algo ha fallado al calcular la ruta. Inténtalo otra vez en unos segundos.'
+}
+
+class ErrorApi extends Error {
+  status: number
+  cuerpo: string
+  constructor(status: number, cuerpo: string) {
+    super(`HTTP ${status}`)
+    this.status = status
+    this.cuerpo = cuerpo
+  }
+}
+
 // URLs para abrir la ruta en apps de navegación (se actualizan tras calcular)
 const mapsUrl = ref('')
 const wazeUrl = ref('')
@@ -116,6 +154,17 @@ const diferenciaKm = computed(() => {
   if (!result.value || !result.value.convencional) return 0
   return Math.round((result.value.convencional.distancia_km - result.value.distancia_km) * 10) / 10
 })
+
+// El mock solo sale sin claves configuradas. Si aparece, hay que decirlo en
+// pantalla en vez de presentar una ruta de ejemplo como si fuera real.
+const esMock = computed(() => result.value?.motor === 'mock')
+
+const NOMBRE_MOTOR: Record<string, string> = {
+  openrouteservice: 'OpenRouteService (restricciones reales)',
+  'google-routes': 'Google Routes (ruta estándar)',
+  mock: 'ruta de ejemplo (sin motor real)'
+}
+const nombreMotor = computed(() => NOMBRE_MOTOR[result.value?.motor || ''] || result.value?.motor || '')
 
 const vehiculoActivo = computed(() =>
   vehiculos.value.find(v => v.id === vehiculoActivoId.value) || null
@@ -407,6 +456,8 @@ const calcularRuta = async () => {
   loading.value = true
   error.value = null
   result.value = null
+  avisoArranque.value = false
+  const tArranque = window.setTimeout(() => { avisoArranque.value = true }, MS_AVISO_ARRANQUE)
   try {
     const response = await fetch(`${API_URL}/api/v1/ruta`, {
       method: 'POST',
@@ -420,15 +471,23 @@ const calcularRuta = async () => {
       })
     })
     if (!response.ok) {
-      throw new Error(`Error ${response.status}: ${await response.text()}`)
+      throw new ErrorApi(response.status, await response.text())
     }
     const data = await response.json()
     result.value = data
     abrirEnMapas(origen.value, destino.value, data.polyline)
   } catch (e: any) {
-    error.value = e.message || 'Error desconocido'
+    if (e instanceof ErrorApi) {
+      error.value = motivoEnEspanol(e.status, e.cuerpo)
+    } else {
+      // Sin respuesta: o no hay conexión, o la máquina de Fly estaba dormida
+      // y no llegó a contestar dentro del tiempo de espera.
+      error.value = avisoArranque.value ? MENSAJE_ARRANQUE_LENTO : MENSAJE_SIN_CONEXION
+    }
     console.error(e)
   } finally {
+    window.clearTimeout(tArranque)
+    avisoArranque.value = false
     loading.value = false
   }
 }
@@ -445,6 +504,7 @@ interface GeocodeCandidato {
 const campoFoco = ref<'origen' | 'destino' | number | null>(null)
 const sugerencias = ref<GeocodeCandidato[]>([])
 const buscandoSugerencias = ref<null | 'origen' | 'destino' | number>(null)
+const geocodeLento = ref(false)
 
 let geocodeTimer: number | undefined
 let geocodeSeq = 0 // para descartar respuestas fuera de orden
@@ -478,7 +538,9 @@ async function buscarSugerencias(campo: 'origen' | 'destino' | number) {
   }
   const seq = ++geocodeSeq
   buscandoSugerencias.value = campo as 'origen' | 'destino' | number
+  geocodeLento.value = false
   geocodeTimer = window.setTimeout(async () => {
+    const tLento = window.setTimeout(() => { geocodeLento.value = true }, MS_AVISO_ARRANQUE)
     try {
       const res = await fetch(`${API_URL}/api/v1/geocode?q=${encodeURIComponent(texto)}`)
       if (!res.ok) throw new Error(`geocode ${res.status}`)
@@ -489,6 +551,8 @@ async function buscarSugerencias(campo: 'origen' | 'destino' | number) {
     } catch (e) {
       if (seq === geocodeSeq) sugerencias.value = []
     } finally {
+      window.clearTimeout(tLento)
+      geocodeLento.value = false
       if (seq === geocodeSeq && buscandoSugerencias.value === campo) {
         buscandoSugerencias.value = null
       }
@@ -612,7 +676,7 @@ const moverParada = (index: number, delta: number) => {
             </div>
           </div>
           <div v-if="typeof campoFoco === 'number' && (sugerencias.length > 0 || buscandoSugerencias === campoFoco)" class="geocode-drop">
-            <div v-if="buscandoSugerencias === campoFoco" class="geocode-hint">Buscando…</div>
+            <div v-if="buscandoSugerencias === campoFoco" class="geocode-hint">{{ geocodeLento ? 'Despertando el servidor…' : 'Buscando…' }}</div>
             <button v-for="c in sugerencias" :key="c.label + c.lat" class="geocode-item"
               @mousedown.prevent="elegirSugerencia(c)">
               <span class="geocode-pin">📍</span><span class="geocode-label">{{ c.label }}</span>
@@ -665,11 +729,18 @@ const moverParada = (index: number, delta: number) => {
           {{ loading ? 'Calculando...' : '🔍 Calcular Ruta' }}
         </button>
 
+        <div v-if="avisoArranque && loading" class="aviso-arranque">🐢 {{ MENSAJE_ARRANQUE }}</div>
+
         <div v-if="error" class="error">⚠️ {{ error }}</div>
 
         <!-- Resultado -->
         <template v-if="result">
           <h2 class="section-title">Rutas sugeridas</h2>
+
+          <div v-if="esMock" class="aviso-mock">
+            <span>⚠️</span>
+            <span>Ruta de ejemplo: no se ha calculado ninguna ruta real (falta la clave del motor). No la uses para conducir.</span>
+          </div>
 
           <!-- Mapa con la geometría exacta de ORS (fuente de verdad) -->
           <RouteMap
@@ -690,7 +761,7 @@ const moverParada = (index: number, delta: number) => {
               <div class="route-main">
                 <div>
                   <span class="route-time">{{ formatoTiempo(result.duracion_min) }}</span>
-                  <p class="route-sub">Motor: {{ result.motor }}</p>
+                  <p class="route-sub">Motor: {{ nombreMotor }}</p>
                 </div>
                 <div class="route-dist">
                   <span class="route-dist-value">{{ formatNum(result.distancia_km) }}</span>
@@ -701,7 +772,7 @@ const moverParada = (index: number, delta: number) => {
                 <span class="chip">🚦 {{ result.pasos?.length || 0 }} pasos</span>
                 <span class="chip">🚌 {{ vehiculoActivo?.nombre || 'vehículo configurado' }}</span>
               </div>
-              <div class="compat-box">
+              <div v-if="!esMock" class="compat-box">
                 <span class="compat-title">✓ Calculado con las restricciones:</span>
                 <span class="compat-tags">altura · peso · longitud · anchura</span>
               </div>
@@ -750,7 +821,7 @@ const moverParada = (index: number, delta: number) => {
                 <span>✅</span>
                 <div>
                   <span class="warning-title">Coinciden</span>
-                  <span class="warning-sub">No hay obstáculos para tu vehículo en esta ruta</span>
+                  <span class="warning-sub">La ruta de coche mide lo mismo, así que en este trayecto no hay que desviarse por las dimensiones del vehículo</span>
                 </div>
               </div>
               <div class="route-nav">
@@ -775,16 +846,19 @@ const moverParada = (index: number, delta: number) => {
             <li v-for="(paso, index) in result.pasos" :key="index">{{ paso }}</li>
           </ol>
 
-          <!-- Riesgos -->
+          <!-- Riesgos: el motor real no devuelve la lista de puntos que evita,
+               así que cuando viene vacía se dice tal cual, sin dar por hecho
+               que no hay ninguno (la lista solo la rellena la ruta de ejemplo). -->
           <template v-if="result.riesgos && result.riesgos.length > 0">
-            <h3 class="section-title">Riesgos</h3>
+            <h3 class="section-title">Riesgos<span v-if="esMock"> (datos de ejemplo)</span></h3>
             <ul class="steps-list">
               <li v-for="(riesgo, index) in result.riesgos" :key="index">
                 <strong>{{ riesgo.nombre }}</strong> ({{ riesgo.tipo }}): {{ riesgo.descripcion }}
               </li>
             </ul>
           </template>
-          <p v-else class="no-riesgos">✅ Ruta calculada evitando las restricciones de tu vehículo</p>
+          <p v-else-if="esMock" class="no-riesgos">Ruta de ejemplo: no hay riesgos reales que mostrar.</p>
+          <p v-else class="no-riesgos">El motor aplica las restricciones de tu vehículo, pero no devuelve la lista de puntos concretos que ha evitado.</p>
         </template>
       </section>
 
@@ -1546,6 +1620,29 @@ input:focus, select:focus { border-color: var(--tema-primary); }
   font-size: 0.9em;
 }
 
+.aviso-arranque {
+  background: rgba(96, 165, 250, 0.1);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  color: #93c5fd;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin-top: 12px;
+  font-size: 0.85em;
+}
+
+.aviso-mock {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fcd34d;
+  padding: 12px 14px;
+  border-radius: 10px;
+  margin: 10px 0;
+  font-size: 0.88em;
+}
+
 .maps-note { font-size: 0.78em; color: #6b7280; margin: 4px 0 16px; font-style: italic; }
 
 .nav-note-badge {
@@ -1561,7 +1658,8 @@ input:focus, select:focus { border-color: var(--tema-primary); }
   margin-bottom: 16px;
 }
 
-.no-riesgos { color: #4ade80; font-size: 0.9em; margin-top: 8px; }
+/* Neutro a propósito: informa de un límite del motor, no celebra nada. */
+.no-riesgos { color: #94a3b8; font-size: 0.9em; margin-top: 8px; line-height: 1.45; }
 
 /* Vehículos */
 .vehiculo-card, .favorito-card {

@@ -52,6 +52,44 @@ def test_corpus_incluye_adr_res_README():
     assert "README.md" in fuentes
 
 
+async def _fake_llamar(respuestas):
+    """Devuelve respuestas en secuencia; las vacias simulan el fallo del :free."""
+    calls = {"n": 0}
+
+    async def fake(api_key, model, system_prompt, user_prompt):
+        r = respuestas[calls["n"]]
+        calls["n"] += 1
+        return r
+
+    return fake, calls
+
+
+@pytest.mark.asyncio
+async def test_responder_reintenta_si_el_llm_devuelve_vacio():
+    """El modelo :free a veces devuelve contenido vacio con HTTP 200: hay que
+    reintentar (max 3) antes de darse por vencido, no devolver un silencio."""
+    import app.assistant as a
+
+    fake, calls = await _fake_llamar(["", "", "respuesta buena"])
+    with patch.object(a, "llamar_openrouter", fake):
+        resultado = await a.responder("key", "¿qué tecnologías usa el proyecto?")
+    assert resultado["respuesta"] == "respuesta buena"
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_responder_no_bucle_infinito_si_siempre_vacio():
+    """Si el LLM devuelve vacio siempre, se entrega un mensaje honesto (no un
+    silencio) tras agotar los reintentos."""
+    import app.assistant as a
+
+    fake, calls = await _fake_llamar(["", "", "", ""])
+    with patch.object(a, "llamar_openrouter", fake):
+        resultado = await a.responder("key", "¿qué tecnologías usa el proyecto?")
+    assert "ahora mismo" in resultado["respuesta"]
+    assert calls["n"] == 3
+
+
 def test_pregunta_fuera_de_corpus_responde_sin_llm():
     idx = _indice_test()
     docs = assistant.buscar(idx, "cuál es el color favorito del fundador de la empresa de Jorge")

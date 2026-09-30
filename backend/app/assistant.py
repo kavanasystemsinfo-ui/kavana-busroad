@@ -242,11 +242,28 @@ async def responder(api_key: str, pregunta: str) -> dict:
     )
     user_prompt = f"PREGUNTA:\n{pregunta}\n\nCONTEXTO (documentación del proyecto):\n{contexto}"
 
+    # El modelo gratuito (:free) a veces devuelve contenido vacío con HTTP 200
+    # (visto en producción 2026-09-30): sin reintento, el widget se queda en
+    # silencio. Se reintenta hasta 3 veces y, si nunca hay texto, se entrega un
+    # mensaje honesto en lugar de una respuesta vacía.
     model = MODELO_PRO
-    try:
-        respuesta = await llamar_openrouter(api_key, model, system_prompt, user_prompt)
-    except RuntimeError:
-        respuesta = await llamar_openrouter(api_key, MODELO_PRO, system_prompt, user_prompt)
+    respuesta = ""
+    ultimo_error: RuntimeError | None = None
+    for _ in range(3):
+        try:
+            respuesta = await llamar_openrouter(api_key, model, system_prompt, user_prompt)
+        except RuntimeError as e:
+            ultimo_error = e
+            continue
+        if respuesta:
+            break
+    if not respuesta:
+        if ultimo_error is not None:
+            raise ultimo_error
+        respuesta = (
+            "No he podido generar la respuesta ahora mismo (el modelo no "
+            "devolvió texto). Inténtalo de nuevo en un momento."
+        )
 
     fuentes = sorted({d["fuente"] for d in docs})
     if contexto_base:

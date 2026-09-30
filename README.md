@@ -276,8 +276,8 @@ Las decisiones importantes se documentan como ADRs en [`docs/adr/`](docs/adr/):
 - [x] **Caché y rate limit persistidos + throttling de Nominatim** (hecho 2026-09-30): `backend/app/store.py`.
 - [x] **Tests del backend y CI** (hecho 2026-09-30): `backend/tests/` (29 tests) + `.github/workflows/ci.yml`, verde en cada push.
 - [x] **Servir la PWA desde Fly, sin depender de Vercel** (hecho 2026-09-30): ADR 008.
-- [ ] Errores del backend en español y aviso de arranque en frío (hoy se ve `Error 422: ...` en bruto)
-- [ ] **Riesgos con el motor real**: la lista `riesgos` solo la rellena el mock (`motor.py`, `_mock()`); con ORS o Google queda vacía y la UI muestra "✅ Ruta calculada evitando las restricciones de tu vehículo". Falta decidir si se exponen los puntos que el motor ha evitado o se reformula el mensaje.
+- [x] **Errores en español y aviso de arranque en frío** (hecho 2026-09-30): `ErrorMotorRutas` traduce el fallo del motor a un motivo con su status propio (503 si no responde, 429 si está saturado, 422 si la dirección no existe) y la UI avisa a los 2,5 s de que el servidor se está despertando. Verificado en producción: una dirección imposible devuelve `422` con "No pude localizar origen o destino. Añade la ciudad o el código postal...", no el JSON de ORS.
+- [x] **Riesgos honestos** (hecho 2026-09-30): con el motor real la lista viene vacía y la UI dice que el motor aplica las restricciones pero no detalla los puntos concretos que ha evitado; si aparece el mock, la ruta se marca como ejemplo. Pendiente decidir si algún día se exponen los puntos evitados.
 - [ ] APK para el hermano (Capacitor + Android Studio) con ajustes: vehículo precargado, tema, quitar comparación
 - [ ] Internacionalización (i18n)
 - [ ] Autenticación y guardado de rutas favoritas
